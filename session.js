@@ -299,8 +299,12 @@ export class PollSession {
     const selected = this.presentation.questionId === question.questionId;
     switch (action) {
       case 'open':
-        question.isOpen = true;
-        question.everOpened = true;
+      case 'select':
+        if (action === 'open') {
+          question.isOpen = true;
+          question.everOpened = true;
+        }
+        if (!selected) this.presentation = { questionId: question.questionId, mode: 'question' };
         break;
       case 'close':
         question.isOpen = false;
@@ -312,9 +316,6 @@ export class PollSession {
       case 'unpublish':
         question.resultsPublished = false;
         if (selected) this.presentation.mode = 'question';
-        break;
-      case 'select':
-        if (!selected) this.presentation = { questionId: question.questionId, mode: 'question' };
         break;
       case 'reset-votes':
         requireValue(confirm === true, '票のリセットには確認が必要です。');

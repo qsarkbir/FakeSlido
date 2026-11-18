@@ -19,8 +19,11 @@
     <div id="stage" class="stage" hidden>
       <section class="panel stage-main" id="stage-main" aria-label="発表内容"></section>
       <aside class="panel join-panel">
-        <h2>投票に参加</h2><div id="qr"></div>
-        <p>カメラでQRコードを読み取ってください。</p><a id="join-link" target="_blank" rel="noopener noreferrer">参加画面を開く ↗</a>
+        <h2>投票に参加</h2>
+        <div id="qr"></div>
+        <p id="qr-help" hidden>カメラでQRコードを読み取ってください。</p>
+        <p id="local-join-help" hidden>ローカルで試用中です。スマートフォンなど別端末から参加するには、HTTPSで公開したURLを使ってください。</p>
+        <a id="join-link" target="_blank" rel="noopener noreferrer">参加画面を開く ↗</a>
       </aside>
     </div>
   </main>

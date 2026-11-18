@@ -58,6 +58,11 @@ export function participantUrl(code) {
   return location.origin + '/#' + code;
 }
 
+const hostname = location.hostname.replace(/\.$/, '');
+const loopback = hostname === 'localhost' || hostname.endsWith('.localhost')
+  || /^127(?:\.\d+){3}$/.test(hostname) || hostname === '[::1]';
+export const canShareParticipantUrl = location.protocol === 'https:' && !loopback;
+
 export class RequestError extends Error {
   constructor(response, body) {
     super(body?.error ?? 'サーバーとの通信に失敗しました。');

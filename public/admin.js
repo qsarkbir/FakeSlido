@@ -1,5 +1,5 @@
 import {
-  $, el, button, message, tabCredential, participantUrl, request, poll, downloadFile,
+  $, el, button, message, tabCredential, participantUrl, canShareParticipantUrl, request, poll, downloadFile,
   storageGet, storageSet, styleLabels, emptyState, statusPill
 } from './common.js';
 import { chart } from './charts.js';
@@ -105,7 +105,7 @@ function renderDetail(question) {
     el('h2', { text: question.text }), el('p', { cls: 'muted',
       text: (question.type === 'single' ? '単一選択' : '複数選択') + ' · ' + styleLabels[question.style] }));
   const controls = el('div', { cls: 'actions detail-actions' },
-    action(question.isOpen ? '受付を終了' : '受付を開始',
+    action(question.isOpen ? '受付を終了' : '受付を開始して発表',
       () => control(question.isOpen ? 'close' : 'open', id), question.isOpen ? '' : 'primary'),
     action(question.resultsPublished ? '結果を非公開' : '結果を公開',
       () => control(question.resultsPublished ? 'unpublish' : 'publish', id), '', !question.everOpened),
@@ -296,9 +296,11 @@ $('erase').addEventListener('click', () => {
     control('erase', undefined, true);
   }
 });
+if (!canShareParticipantUrl) $('copy-link').textContent = 'この端末用の参加URLをコピー';
 $('copy-link').addEventListener('click', () => run(async () => {
   await navigator.clipboard.writeText(participantUrl(state.participantCode));
-  message('参加URLをコピーしました。');
+  message(canShareParticipantUrl ? '参加URLをコピーしました。'
+    : 'この端末用の参加URLをコピーしました。別端末からの参加には、HTTPSで公開したURLを使ってください。');
 }));
 $('open-present').addEventListener('click', () => {
   window.open('/present#' + state.presentationToken, '_blank', 'noopener,noreferrer');

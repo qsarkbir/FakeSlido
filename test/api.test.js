@@ -101,6 +101,32 @@ test('公開状態、受付状態、発表モードが独立し、未オープ�
   assert.equal((await result()).status, 404);
 });
 
+test('受付開始で発表画面が、受付を開始した質問の表示に切り替わる', async () => {
+  const { call, deck, control } = await fixture();
+  const { body: { presentationToken: token } } = await deck([first, second]);
+  const present = revision => call('/api/present/state' + (revision === undefined ? '' : '?revision=' + revision), { token });
+  const { body: waiting } = await present();
+  assert.equal(waiting.question, null);
+
+  const pending = present(waiting.revision);
+  await control('open', first.questionId);
+  const { body: opened } = await pending;
+  assert.equal(opened.question.questionId, first.questionId);
+  assert.equal(opened.question.isOpen, true);
+  assert.equal(opened.mode, 'question');
+  assert.equal(opened.question.resultsPublished, false);
+
+  await control('show-results');
+  const switching = await control('open', second.questionId);
+  assert.ok(switching.body.questions.every(question => question.isOpen));
+  assert.equal(switching.body.questions[0].resultsPublished, true);
+  const { body: switched } = await present();
+  assert.equal(switched.question.questionId, second.questionId);
+  assert.equal(switched.mode, 'question');
+  assert.equal(switched.question.resultsPublished, false);
+  assert.equal(Object.hasOwn(switched.question, 'results'), false);
+});
+
 test('複数選択を集計し、CSVとJSONに集計値だけを書き出す', async () => {
   const { call, deck, control, vote } = await fixture();
   const { body: created } = await deck([{ ...first, text: '=SUM(1,2)' }, {

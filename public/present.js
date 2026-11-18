@@ -1,4 +1,6 @@
-import { $, el, message, tabCredential, participantUrl, poll, storageSet, emptyState, statusPill } from './common.js';
+import {
+  $, el, message, tabCredential, participantUrl, canShareParticipantUrl, poll, storageSet, emptyState, statusPill
+} from './common.js';
 import { chart, svgElement } from './charts.js';
 
 const token = tabCredential('present');
@@ -9,6 +11,11 @@ function join(code) {
   previousCode = code;
   const url = participantUrl(code);
   $('join-link').href = url;
+  if (!canShareParticipantUrl) {
+    $('join-link').textContent = 'この端末で参加画面を開く ↗';
+    $('local-join-help').hidden = false;
+    return;
+  }
   const qr = window.qrcode(0, 'M');
   qr.addData(url);
   qr.make();
@@ -24,6 +31,7 @@ function join(code) {
   }
   svg.append(svgElement('path', { d: modules.join(''), fill: '#172134' }));
   $('qr').replaceChildren(svg);
+  $('qr-help').hidden = false;
 }
 
 function render(state) {
