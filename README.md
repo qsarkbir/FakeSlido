@@ -35,18 +35,34 @@ npm start
 
 ## Cloudflare Quick Tunnel での試用
 
-アプリを実行するマシンに `cloudflared` を用意します。同じポートでローカル試用中のアプリがあれば、必要な集計を書き出してから停止します。
+PochiPoll と `cloudflared` を同じOS環境で実行します。両方を Windows 側で起動するか、両方を WSL 内で起動してください。同じポートでローカル試用中のアプリがあれば、必要な集計を書き出してから停止します。
 
-1. `cloudflared tunnel --url http://127.0.0.1:3000` を実行し、表示された HTTPS オリジンを控えます。
-2. 別のターミナルで次を実行します。例示のホストは実際に発行されたホストに置き換えます。
+1. ターミナル1で `cloudflared tunnel --url http://127.0.0.1:3000` を実行します。表示された `https://…trycloudflare.com` を控え、このターミナルを開いたままにします。
+2. ターミナル2で、`package.json` がある PochiPoll のディレクトリから以下を実行します。例示の URL は手順1で発行された URL に置き換えます。
 
-   ```sh
-   BASE_URL=https://example.trycloudflare.com TRANSPORT=cloudflare npm start
+   Windows PowerShell
+
+   ```powershell
+   $env:BASE_URL = 'https://example.trycloudflare.com'
+   $env:TRANSPORT = 'cloudflare'
+   $env:PORT = '3000'
+   npm.cmd start
    ```
 
-3. 起動時に表示された HTTPS の運営用URLを開き、そこから発表画面を開きます。発表画面には HTTPS の参加URLを含むQRコードが表示されます。
+   macOS・Linux・WSL の Bash
+
+   ```bash
+   BASE_URL=https://example.trycloudflare.com TRANSPORT=cloudflare PORT=3000 npm start
+   ```
+
+3. ターミナル2に HTTPS の運営用URLが表示されたら、それを開きます。発表画面には HTTPS の参加URLを含むQRコードが表示されます。利用中は両方のターミナルを起動したままにします。
 
 アプリは公開オリジン宛ての `Host` を検証します。Tunnel を同じマシンで動かし、アプリのループバック待受に Tunnel 以外の外部経路を作らない構成で運用してください。この構成で、投票の短時間レート制限に `CF-Connecting-IP` を利用します。
+
+### 接続エラーの確認
+
+- `dial tcp 127.0.0.1:3000` に続いて `connection refused` や `connectex` が出る場合は、アプリ側のターミナルで起動エラーを確認します。Windows では、別の PowerShell で `Test-NetConnection 127.0.0.1 -Port 3000` を実行すると待受を確認できます。`TcpTestSucceeded : True` が目安です。別のポートで起動する場合は `PORT` と Tunnel の `--url` のポートを揃えます。
+- 公開 URL が HTTP 421 を返す場合は、起動時に表示された運営用URLのホストと、いま実行中の Tunnel が発行したホストを照合します。Tunnel を起動し直してホストが変わった場合は、必要な集計を書き出し、新しい `BASE_URL` を設定してアプリを起動し直します。
 
 別の HTTPS リバースプロキシを使う場合は、`TRANSPORT=https-proxy` と同じ外部オリジンの `BASE_URL` を設定し、公開オリジンの `Host` を転送してください。このモードのレート制限はアプリから見た接続元単位です。
 
