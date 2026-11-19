@@ -4,9 +4,11 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
-import { ApiError, PollSession, requireValue, tokenPattern } from './session.js';
+import { PollSession } from './session.js';
+import { ApiError, requireValue, tokenPattern } from './validation.js';
 import type {
-  AdminState, ErrorResponse, PreflightStatus, PresentState, PublicResults, PublicState, ResultsExport, Role, VoteReceipt
+  AdminComments, AdminState, CommentReceipt, ErrorResponse, LikeReceipt, PreflightStatus, PresentState,
+  PublicComments, PublicResults, PublicState, ResultsExport, Role, VoteReceipt
 } from './types.js';
 
 const headers = {
@@ -30,7 +32,8 @@ const assets = {
 };
 const digest = (value: string) => createHash('sha256').update(value).digest();
 
-type JsonResponse = AdminState | ErrorResponse | PreflightStatus | PresentState | PublicResults | PublicState | VoteReceipt;
+type JsonResponse = AdminComments | AdminState | CommentReceipt | ErrorResponse | LikeReceipt
+  | PreflightStatus | PresentState | PublicComments | PublicResults | PublicState | VoteReceipt;
 
 function putJson(response: ServerResponse, status: number, value: JsonResponse) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -104,11 +107,11 @@ function csvExport(data: ResultsExport) {
 // タプルのユニオンで、操作ごとに許すメソッドと認証ロールの組を定義する。
 type Route =
   | [method: 'GET', role: Role, operation: 'state']
-  | [method: 'GET', role: 'public', operation: 'results']
-  | [method: 'POST', role: 'public', operation: 'vote']
+  | [method: 'GET', role: 'public', operation: 'results' | 'comments']
+  | [method: 'POST', role: 'public', operation: 'vote' | 'post-comment' | 'set-like']
   | [method: 'PUT', role: 'admin', operation: 'deck']
   | [method: 'POST', role: 'admin', operation: 'control']
-  | [method: 'GET', role: 'admin', operation: 'export' | 'preflight'];
+  | [method: 'GET', role: 'admin', operation: 'export' | 'preflight' | 'admin-comments'];
 const routes = new Map<string, Route>([
   ['/api/public/state', ['GET', 'public', 'state']],
   ['/api/public/results', ['GET', 'public', 'results']],
@@ -119,6 +122,12 @@ const routes = new Map<string, Route>([
   ['/api/admin/deck', ['PUT', 'admin', 'deck']],
   ['/api/admin/control', ['POST', 'admin', 'control']],
   ['/api/admin/export', ['GET', 'admin', 'export']]
+]);
+
+const discussionRoutes = new Map<string, Route[]>([
+  ['/api/public/comments', [['GET', 'public', 'comments'], ['POST', 'public', 'post-comment']]],
+  ['/api/public/likes', [['POST', 'public', 'set-like']]],
+  ['/api/admin/comments', [['GET', 'admin', 'admin-comments']]]
 ]);
 
 function checkParameters(url: URL, ...allowed: string[]) {
@@ -133,10 +142,12 @@ interface AppOptions {
   idleMs?: number;
   voteLimit?: number;
   waitMs?: number;
+  // 運営者の受入確認が終わるまではテスト用の起動からだけ有効化する。
+  discussionEnabled?: boolean;
 }
 
 export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_200_000,
-  voteLimit = 600, waitMs = 20_000 }: AppOptions = {}) {
+  voteLimit = 600, waitMs = 20_000, discussionEnabled = false }: AppOptions = {}) {
   if (typeof adminKey !== 'string' || !tokenPattern.test(adminKey)
     || Buffer.from(adminKey, 'base64url').toString('base64url') !== adminKey) {
     throw new Error('ADMIN_KEY は32バイトの乱数をBase64URLで符号化してください。');
@@ -169,7 +180,17 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
       body: readFileSync(new URL('./public' + filename + '.html', import.meta.url))
     });
   }
-  const session = new PollSession({ idleMs, voteLimit });
+  const session = new PollSession({ idleMs, voteLimit, discussionEnabled });
+
+  function clientAddress(request: IncomingMessage): string {
+    const ip = request.socket.remoteAddress ?? 'unknown';
+    if (transport !== 'cloudflare') return ip;
+    const forwardedIp = request.headers['cf-connecting-ip'];
+    if (!['127.0.0.1', '::1'].includes(ip) || typeof forwardedIp !== 'string' || !isIP(forwardedIp)) {
+      throw new ApiError(403, 'トンネルからの接続を確認できません。');
+    }
+    return forwardedIp;
+  }
 
   function authorize(role: Role, request: IncomingMessage) {
     const match = /^Bearer ([A-Za-z0-9_-]{22,43})$/.exec(request.headers.authorization ?? '');
@@ -210,11 +231,12 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
         response.end(request.method === 'HEAD' ? undefined : asset.body);
         return;
       }
-      const route = routes.get(url.pathname);
+      const topicRoutes = discussionEnabled ? discussionRoutes.get(url.pathname) : undefined;
+      const route = topicRoutes?.find(([method]) => method === request.method) ?? topicRoutes?.[0] ?? routes.get(url.pathname);
       if (!route) throw new ApiError(404, 'ページが見つかりません。');
       const [method, role, operation] = route;
       if (request.method !== method) {
-        response.setHeader('Allow', method);
+        response.setHeader('Allow', topicRoutes ? topicRoutes.map(([verb]) => verb).join(', ') : method);
         throw new ApiError(405, 'このメソッドは利用できません。');
       }
       authorize(role, request);
@@ -238,6 +260,14 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
         case 'results':
           checkParameters(url, 'questionId');
           putJson(response, 200, session.results(url.searchParams.get('questionId')));
+          break;
+        case 'comments':
+          checkParameters(url, 'questionId');
+          putJson(response, 200, session.publicComments(url.searchParams.get('questionId'), request.headers['x-pochipoll-voter']));
+          break;
+        case 'admin-comments':
+          checkParameters(url, 'questionId');
+          putJson(response, 200, session.adminComments(url.searchParams.get('questionId')));
           break;
         case 'preflight': {
           checkParameters(url);
@@ -267,20 +297,17 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
             throw new ApiError(403, '送信元のオリジンが一致しません。');
           }
           const sessionId = session.sessionId;
-          const input = await readJson(request, operation === 'deck' ? 256 * 1024 : 16 * 1024);
+          const discussionMutation = operation === 'post-comment' || operation === 'set-like';
+          const input = await readJson(request, operation === 'deck' ? 256 * 1024 : (discussionMutation ? 8 : 16) * 1024);
           authorize(role, request);
           session.requireSession(sessionId);
           if (operation === 'vote') {
-            let ip = request.socket.remoteAddress ?? 'unknown';
-            if (transport === 'cloudflare') {
-              const forwardedIp = request.headers['cf-connecting-ip'];
-              if (!['127.0.0.1', '::1'].includes(ip) || typeof forwardedIp !== 'string' || !isIP(forwardedIp)) {
-                throw new ApiError(403, 'トンネルからの接続を確認できません。');
-              }
-              ip = forwardedIp;
-            }
-            const voteRevision = session.vote(input, ip);
+            const voteRevision = session.vote(input, clientAddress(request));
             putJson(response, 200, { sessionId: session.sessionId, voteRevision });
+          } else if (operation === 'post-comment') {
+            putJson(response, 200, session.postComment(input, clientAddress(request)));
+          } else if (operation === 'set-like') {
+            putJson(response, 200, session.setLike(input, clientAddress(request)));
           } else {
             if (operation === 'deck') session.saveDeck(input);
             else session.control(input);

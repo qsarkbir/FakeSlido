@@ -547,3 +547,257 @@ test('HTTPS公開モードでは公開オリジンと短期の接続元別制限
   assert.equal((await send('192.0.2.1')).status, 429);
   assert.equal((await send('192.0.2.2')).status, 200);
 });
+
+const manualTopic = { questionId: 'manual', text: '事前審査のお題', type: 'discussion' };
+const instantTopic = { questionId: 'instant', text: '即時公開のお題', type: 'discussion',
+  settings: { moderationMode: 'instant' } };
+
+async function discussionFixture(options) {
+  const app = await fixture({ discussionEnabled: true, ...options });
+  const { call } = app;
+  const adminComments = id => call('/api/admin/comments?questionId=' + id);
+  const comments = (token, id, voterToken) => call('/api/public/comments?questionId=' + id, {
+    token, headers: voterToken ? { 'X-PochiPoll-Voter': voterToken } : {}
+  });
+  const requestData = (snapshot, questionId, voterToken) => ({
+    sessionId: snapshot.sessionId, questionId, voterToken,
+    discussionRevision: snapshot.discussions.find(question => question.questionId === questionId).discussionRevision
+  });
+  const post = (snapshot, data, token = snapshot.participantCode) =>
+    call('/api/public/comments', { token, method: 'POST', data });
+  const like = (snapshot, data, token = snapshot.participantCode) =>
+    call('/api/public/likes', { token, method: 'POST', data });
+  return { ...app, adminComments, comments, requestData, post, like };
+}
+
+test('通常起動ではコメント API とコメント形式を使用できない', async () => {
+  const { call, deck, state } = await fixture();
+  const before = await state();
+  assert.equal(Object.hasOwn(before, 'discussions'), false);
+  assert.equal((await deck([manualTopic])).status, 400);
+  assert.equal((await call('/api/public/comments?questionId=manual', { token: before.participantCode })).status, 404);
+  assert.equal((await call('/api/public/comments', {
+    token: before.participantCode, method: 'POST', data: {}
+  })).status, 404);
+  assert.equal((await call('/api/admin/comments?questionId=manual')).status, 404);
+  assert.equal((await call('/api/public/likes', { token: before.participantCode, method: 'POST', data: {} })).status, 404);
+  assert.equal((await state()).deckRevision, before.deckRevision);
+});
+
+test('コメントの権限を分離し、審査待ちと未受付のお題を公開しない', async () => {
+  const { call, deck, control, comments, adminComments, post, like, requestData, state, vote } = await discussionFixture();
+  assert.equal((await deck([{ ...manualTopic, settings: { moderationMode: 'automatic' } }])).status, 400);
+  assert.equal((await deck([{ ...manualTopic, settings: { maxPostsPerToken: 2 } }])).status, 400);
+  const { status, body: initial } = await deck([first, manualTopic, instantTopic]);
+  assert.equal(status, 200);
+  assert.deepEqual(initial.questions.map(q => q.questionId), ['one']);
+  assert.deepEqual(initial.discussions[0].settings, { moderationMode: 'manual', maxPostsPerToken: 3 });
+  assert.equal(initial.discussions[0].questionOrder, 2);
+  const { participantCode: token, presentationToken } = initial;
+  const publicState = () => call('/api/public/state', { token });
+  const presentState = () => call('/api/present/state', { token: presentationToken });
+  assert.deepEqual((await publicState()).body.discussions, []);
+  assert.deepEqual((await comments(token, 'manual')).body, (await comments(token, 'missing')).body);
+
+  await control('open', 'manual');
+  const publicTopics = (await publicState()).body.discussions;
+  assert.deepEqual(publicTopics.map(q => q.questionId), ['manual']);
+  assert.equal(publicTopics[0].questionOrder, 1);
+  assert.equal(Object.hasOwn(publicTopics[0], 'settings'), false);
+  const author = newKey();
+  const content = { ...requestData(initial, 'manual', author), clientSubmissionId: 'first', body: '審査待ちのテスト本文' };
+  assert.equal((await post(initial, content, presentationToken)).status, 401);
+  const added = await post(initial, content);
+  assert.equal(added.status, 200);
+  const { commentId } = added.body;
+  assert.deepEqual(added.body, { commentId, visibility: 'pending' });
+  assert.equal((await call('/api/admin/comments?questionId=manual', { token })).status, 401);
+  assert.equal((await call('/api/admin/comments?questionId=manual', { token: presentationToken })).status, 401);
+  assert.equal((await comments(presentationToken, 'manual')).status, 401);
+  assert.deepEqual((await comments(token, 'manual', author)).body.comments, []);
+  assert.deepEqual((await adminComments('manual')).body.comments, [
+    { commentId, body: content.body, visibility: 'pending', likes: 0, presented: false }
+  ]);
+  assert.equal((await state()).discussions[0].commentCount, 1);
+  const exposed = JSON.stringify([(await publicState()).body, (await presentState()).body]);
+  assert.ok(!exposed.includes(content.body));
+  assert.ok(!exposed.includes('commentCount'));
+  assert.ok(!exposed.includes(author));
+  assert.equal((await like(initial, { ...requestData(initial, 'manual', newKey()), commentId, liked: true })).status, 404);
+  assert.equal((await vote(token, 'manual', 1, 1)).status, 404);
+  assert.equal((await call('/api/public/results?questionId=manual', { token })).status, 404);
+});
+
+test('投稿の冪等性と文字数・サイズ・セッションの検証を行う', async () => {
+  const { origin, call, deck, control, post, adminComments, requestData } = await discussionFixture();
+  const { body: snapshot } = await deck([manualTopic, instantTopic]);
+  await control('open', 'manual');
+  await control('open', 'instant');
+  const voterToken = newKey();
+  const base = { ...requestData(snapshot, 'manual', voterToken), clientSubmissionId: 'repeat' };
+  const content = { ...base, body: '😀'.repeat(300) };
+  const attempts = await Promise.all([post(snapshot, content), post(snapshot, content)]);
+  assert.deepEqual(attempts.map(result => result.status), [200, 200]);
+  assert.deepEqual(attempts[0].body, attempts[1].body);
+  assert.equal((await post(snapshot, { ...base, body: '別の本文' })).status, 409);
+  assert.equal((await post(snapshot, { ...base, voterToken: newKey(), body: '別の投稿者' })).status, 200);
+  assert.equal((await post(snapshot, { ...content, ...requestData(snapshot, 'instant', voterToken) })).status, 200);
+
+  for (const body of ['  \n ', '😀'.repeat(301), false]) {
+    assert.equal((await post(snapshot, { ...base, clientSubmissionId: 'invalid', body })).status, 400);
+  }
+  assert.equal((await post(snapshot, { ...content, sessionId: 'old-session' })).status, 409);
+  assert.equal((await post(snapshot, { ...content, discussionRevision: base.discussionRevision + 1 })).status, 409);
+  assert.equal((await post(snapshot, { ...content, visibility: 'published' })).status, 400);
+  assert.equal((await post(snapshot, { ...content, voterToken: 'invalid' })).status, 400);
+  assert.equal((await post(snapshot, { ...content, body: 'a'.repeat(8192) })).status, 413);
+  const malformed = await fetch(origin + '/api/public/comments', {
+    method: 'POST', body: '{', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + snapshot.participantCode }
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal((await call('/api/public/comments', {
+    token: snapshot.participantCode, method: 'POST', data: content, headers: { Origin: 'https://example.test' }
+  })).status, 403);
+
+  for (const id of ['second', 'third']) {
+    assert.equal((await post(snapshot, { ...base, clientSubmissionId: id, body: id })).status, 200);
+  }
+  assert.equal((await post(snapshot, { ...base, clientSubmissionId: 'fourth', body: '上限を超える投稿' })).status, 409);
+  assert.equal((await post(snapshot, content)).status, 200);
+  assert.equal((await adminComments('manual')).body.comments.length, 4);
+  assert.equal((await adminComments('manual')).body.comments[0].body, content.body);
+});
+
+test('公開済みコメントにだけいいねでき、同じ設定の再送は重複しない', async () => {
+  const { deck, control, post, comments, like, requestData } = await discussionFixture();
+  const { body: snapshot } = await deck([instantTopic, { ...instantTopic, questionId: 'other' }]);
+  await control('open', 'instant');
+  await control('open', 'other');
+  const author = newKey();
+  const reader = newKey();
+  const base = requestData(snapshot, 'instant', author);
+  const publicList = (token = reader) => comments(snapshot.participantCode, 'instant', token);
+  const literal = '<b>テスト本文</b>';
+  const { body: firstPost } = await post(snapshot, { ...base, clientSubmissionId: 'first', body: literal });
+  const { body: secondPost } = await post(snapshot, { ...base, clientSubmissionId: 'second', body: '二番目' });
+  const orderedIds = async () => (await publicList()).body.comments.map(comment => comment.commentId);
+  assert.deepEqual(await orderedIds(), [firstPost.commentId, secondPost.commentId]);
+  const reaction = { ...requestData(snapshot, 'instant', reader), commentId: secondPost.commentId, liked: true };
+  assert.equal((await like(snapshot, { ...reaction, voterToken: author })).status, 403);
+  assert.equal((await like(snapshot, { ...reaction, liked: 'true' })).status, 400);
+  assert.equal((await like(snapshot, { ...reaction, ...requestData(snapshot, 'other', reader) })).status, 404);
+  const attempts = await Promise.all([like(snapshot, reaction), like(snapshot, reaction)]);
+  assert.ok(attempts.every(result => result.status === 200 && result.body.likes === 1));
+  assert.deepEqual(await orderedIds(), [secondPost.commentId, firstPost.commentId]);
+  const { body, headers } = await publicList();
+  assert.equal(headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(body.comments[1], { commentId: firstPost.commentId, body: literal, likes: 0, presented: false,
+    authoredByYou: false, likedByYou: false });
+  assert.equal(body.comments[0].likedByYou, true);
+  assert.equal((await publicList(author)).body.comments[0].authoredByYou, true);
+  assert.equal((await like(snapshot, { ...reaction, liked: false })).body.likes, 0);
+  assert.deepEqual(await orderedIds(), [firstPost.commentId, secondPost.commentId]);
+  assert.equal((await like(snapshot, reaction)).body.likes, 1);
+  await control('close', 'instant');
+  assert.equal((await like(snapshot, { ...reaction, liked: false })).status, 409);
+  assert.equal((await post(snapshot, { ...base, clientSubmissionId: 'closed', body: literal })).status, 409);
+  assert.equal((await publicList()).body.comments[0].likes, 1);
+});
+
+test('審査設定の変更は新規投稿にだけ適用し、置換や全消去で旧データを破棄する', async () => {
+  const { call, deck, control, erase, post, comments, adminComments, requestData } = await discussionFixture();
+  const { body: initial } = await deck([manualTopic, first]);
+  const { participantCode: token } = initial;
+  await control('open', 'manual');
+  const voterToken = newKey();
+  const base = requestData(initial, 'manual', voterToken);
+  const pendingPost = await post(initial, { ...base, body: '審査待ち', clientSubmissionId: 'pending' });
+  assert.equal(pendingPost.body.visibility, 'pending');
+  const converted = { ...manualTopic, settings: { moderationMode: 'instant' } };
+  const { body: changed } = await deck([first, converted]);
+  assert.equal(changed.discussions[0].discussionRevision, base.discussionRevision);
+  assert.equal(changed.discussions[0].questionOrder, 2);
+  assert.deepEqual((await comments(token, 'manual')).body.comments, []);
+  const secondPost = await post(changed, { ...base, body: '即時公開', clientSubmissionId: 'published' });
+  assert.equal(secondPost.body.visibility, 'published');
+  await deck([first, manualTopic]);
+  assert.deepEqual((await adminComments('manual')).body.comments.map(comment => comment.visibility), ['pending', 'published']);
+  assert.deepEqual((await comments(token, 'manual')).body.comments.map(comment => comment.body), ['即時公開']);
+  const pollExport = await call('/api/admin/export?format=json');
+  assert.deepEqual(pollExport.body.questions.map(question => question.questionId), ['one']);
+  assert.ok(!pollExport.raw.toString().includes('即時公開'));
+  const csv = await call('/api/admin/export?format=csv');
+  assert.ok(!csv.raw.toString().includes('審査待ち'));
+
+  const { body: edited } = await deck([first, { ...manualTopic, text: '編集したお題' }]);
+  assert.ok(edited.discussions[0].discussionRevision > base.discussionRevision);
+  assert.equal((await post(edited, { ...base, body: '旧画面からの投稿', clientSubmissionId: 'stale' })).status, 409);
+  assert.equal((await deck([first], { replace: true })).body.code, 'confirm_reset');
+  const { body: replaced } = await deck([first, manualTopic], { replace: true, confirmReset: true });
+  assert.equal(replaced.discussions[0].commentCount, 0);
+  assert.equal(replaced.discussions[0].everOpened, false);
+  assert.deepEqual((await adminComments('manual')).body.comments, []);
+  await control('open', 'manual');
+  assert.equal((await post(replaced, { ...requestData(replaced, 'manual', voterToken),
+    body: '置換後の投稿', clientSubmissionId: 'new' })).status, 200);
+  const { body: cleared } = await erase(initial.sessionId);
+  assert.deepEqual(cleared.discussions, []);
+  assert.equal((await comments(token, 'manual')).status, 410);
+  assert.equal((await adminComments('manual')).status, 404);
+});
+
+test('自動消去でコメントと参加コードを破棄する', async () => {
+  const { deck, control, post, comments, adminComments, state, requestData } = await discussionFixture({ idleMs: 400 });
+  await deck([instantTopic]);
+  const { body: opened } = await control('open', 'instant');
+  assert.equal((await post(opened, { ...requestData(opened, 'instant', newKey()),
+    clientSubmissionId: 'expires', body: '自動消去のテスト' })).status, 200);
+  assert.equal((await state()).expiresAt, opened.expiresAt);
+  await sleep(Math.max(0, opened.expiresAt - Date.now()) + 30);
+  assert.equal((await adminComments('instant')).status, 404);
+  assert.equal((await comments(opened.participantCode, 'instant')).status, 410);
+});
+
+test('投票・投稿・いいねの短期レート制限を分ける', async () => {
+  const { deck, control, post, like, vote, requestData } = await discussionFixture({ voteLimit: 1 });
+  const { body: snapshot } = await deck([first, instantTopic]);
+  await control('open', 'one');
+  await control('open', 'instant');
+  const data = { ...requestData(snapshot, 'instant', newKey()), clientSubmissionId: 'one', body: 'レート確認' };
+  const { body: created, status } = await post(snapshot, data);
+  assert.equal(status, 200);
+  const limitedPost = await post(snapshot, data);
+  assert.equal(limitedPost.status, 429);
+  assert.equal(limitedPost.headers.get('retry-after'), '3');
+  const reaction = { ...requestData(snapshot, 'instant', newKey()), commentId: created.commentId, liked: true };
+  assert.equal((await like(snapshot, reaction)).status, 200);
+  assert.equal((await like(snapshot, reaction)).status, 429);
+  assert.equal((await vote(snapshot.participantCode, 'one', 1, snapshot.questions[0].voteRevision)).status, 200);
+});
+
+test('一人・お題・セッションの投稿上限を適用する', async () => {
+  const { deck, control, post, requestData } = await discussionFixture({ voteLimit: 2000 });
+  const topics = Array.from({ length: 6 }, (_, index) => ({
+    ...instantTopic, questionId: 'topic-' + index, settings: { maxPostsPerToken: 'unlimited' }
+  }));
+  const singleSlot = { ...manualTopic, settings: { maxPostsPerToken: 1 } };
+  const { body: snapshot } = await deck([...topics, singleSlot]);
+  const voterToken = newKey();
+  const send = (questionId, index) => post(snapshot, { ...requestData(snapshot, questionId, voterToken),
+    body: '上限テスト用の本文', clientSubmissionId: 'id-' + index });
+  await control('open', 'manual');
+  assert.equal((await send('manual', 0)).status, 200);
+  assert.equal((await send('manual', 1)).status, 409);
+  await deck(topics, { confirmReset: true });
+
+  for (const topic of topics.slice(0, 5)) {
+    await control('open', topic.questionId);
+    const posted = await Promise.all(Array.from({ length: 200 }, (_, index) => send(topic.questionId, index)));
+    assert.ok(posted.every(response => response.status === 200), topic.questionId);
+  }
+  assert.equal((await send(topics[0].questionId, 200)).status, 409);
+  assert.equal((await send(topics[0].questionId, 0)).status, 200);
+  await control('open', topics[5].questionId);
+  assert.equal((await send(topics[5].questionId, 0)).status, 409);
+});

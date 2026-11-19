@@ -28,6 +28,96 @@ export interface Question extends PublicQuestion {
   votes: Map<string, number[]>;
 }
 
+export type ModerationMode = 'manual' | 'instant';
+export type CommentVisibility = 'pending' | 'published' | 'hidden';
+
+export interface DiscussionSettings {
+  moderationMode: ModerationMode;
+  maxPostsPerToken: 1 | 3 | 'unlimited';
+}
+
+export interface DiscussionDraft {
+  questionId?: string;
+  type: 'discussion';
+  text: string;
+  settings?: Partial<DiscussionSettings>;
+}
+
+export interface DiscussionDefinition extends DiscussionDraft {
+  questionId: string;
+  settings: DiscussionSettings;
+}
+
+export interface PublicDiscussion {
+  questionId: string;
+  questionOrder: number;
+  text: string;
+  type: 'discussion';
+  isOpen: boolean;
+  discussionRevision: number;
+}
+
+export interface AdminDiscussion extends PublicDiscussion {
+  everOpened: boolean;
+  settings: DiscussionSettings;
+  commentCount: number;
+}
+
+export interface PublicComment {
+  commentId: string;
+  body: string;
+  likes: number;
+  presented: boolean;
+  likedByYou: boolean;
+  authoredByYou: boolean;
+}
+
+export interface AdminComment extends Omit<PublicComment, 'likedByYou' | 'authoredByYou'> {
+  visibility: CommentVisibility;
+}
+
+interface DiscussionRequest {
+  sessionId: string;
+  questionId: string;
+  discussionRevision: number;
+  voterToken: string;
+}
+
+export interface PostCommentInput extends DiscussionRequest {
+  body: string;
+  clientSubmissionId: string;
+}
+
+export interface SetLikeInput extends DiscussionRequest {
+  commentId: string;
+  liked: boolean;
+}
+
+export interface CommentReceipt {
+  commentId: string;
+  visibility: CommentVisibility;
+}
+
+export interface LikeReceipt {
+  commentId: string;
+  liked: boolean;
+  likes: number;
+}
+
+export interface PublicComments {
+  sessionId: string;
+  questionId: string;
+  discussionRevision: number;
+  comments: PublicComment[];
+}
+
+export interface AdminComments {
+  sessionId: string;
+  questionId: string;
+  discussionRevision: number;
+  comments: AdminComment[];
+}
+
 export interface OptionResult {
   optionIndex: number;
   optionText: string;
@@ -55,7 +145,7 @@ export interface VoteInput {
 }
 
 export interface DeckInput {
-  questions: QuestionDraft[];
+  questions: (QuestionDraft | DiscussionDraft)[];
   deckRevision: number;
   replace?: boolean;
   confirmReset?: boolean;
@@ -76,6 +166,7 @@ interface StateBase {
 
 export interface PublicState extends StateBase {
   questions: PublicQuestion[];
+  discussions?: PublicDiscussion[];
 }
 
 export interface PresentState extends StateBase {
@@ -92,6 +183,7 @@ export interface AdminState extends StateBase {
   presentationToken: string;
   presentation: Presentation;
   questions: (PublicQuestion & { everOpened: boolean; results: Tally })[];
+  discussions?: AdminDiscussion[];
 }
 
 export interface PreflightStatus {
