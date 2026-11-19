@@ -61,5 +61,29 @@
       <footer class="actions dialog-actions"><button type="button" id="cancel-edit-footer">キャンセル</button><button type="submit" class="primary">質問を保存</button></footer>
     </form>
   </dialog>
+  <dialog id="erase-dialog" aria-labelledby="erase-title" aria-describedby="erase-description">
+    <div class="erase-dialog-content">
+      <h2 id="erase-title">全データ消去の確認</h2>
+      <p id="erase-description">サーバー上の質問と票をすべて消去します。現在の参加URLと発表URLは無効になり、消した票は復元できません。</p>
+      <dl class="erase-counts" aria-live="polite">
+        <div><dt>消去する質問数</dt><dd id="erase-questions"></dd></div>
+        <div><dt>回答のある質問数</dt><dd id="erase-answered"></dd></div>
+        <div><dt>総回答件数</dt><dd id="erase-responses"></dd></div>
+      </dl>
+      <div id="erase-exports" class="erase-exports" hidden>
+        <p class="muted">総回答件数は質問ごとの回答者数の合計です。必要な集計をダウンロードし、保存先をご確認ください。ブラウザから保存完了を確認することはできません。</p>
+        <div class="actions">
+          <button type="button" id="erase-csv" class="compact">集計 CSV をダウンロード</button>
+          <button type="button" id="erase-json" class="compact">集計 JSON をダウンロード</button>
+        </div>
+      </div>
+      <p id="erase-session-changed" class="notice" role="status" hidden>セッションが切り替わりました。消去する場合は、この画面を閉じて開き直してください。</p>
+      <p id="erase-error" class="notice" role="alert" hidden></p>
+      <footer class="actions dialog-actions">
+        <button type="button" id="erase-cancel" autofocus>キャンセル</button>
+        <button type="button" id="erase-confirm" class="danger-link">消去する</button>
+      </footer>
+    </div>
+  </dialog>
 </body>
 </html>

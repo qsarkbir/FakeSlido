@@ -163,7 +163,12 @@ button.icon { width: 42px; font-size: 1.4rem; padding: 0; }
 .chart-note { margin-top: .8rem; font-size: .8em; }
 dialog { color: var(--ink); width: min(520px, calc(100% - 2rem)); border: 1px solid var(--line); border-radius: 16px; padding: 0; max-height: 90vh; }
 dialog::backdrop { background: #172134a8; }
-#edit-form { display: grid; gap: .9rem; padding: 1.25rem; }
+#edit-form, .erase-dialog-content { display: grid; gap: .9rem; padding: 1.25rem; }
+.erase-counts { margin: 0; display: grid; gap: .45rem; padding: .85rem; border: 1px solid var(--line); border-radius: 9px; }
+.erase-counts div { display: flex; justify-content: space-between; gap: .8rem; }
+.erase-counts dd { margin: 0; font-weight: 800; font-variant-numeric: tabular-nums; }
+.erase-exports .actions { margin-top: .55rem; }
+.erase-dialog-content .notice { margin: 0; }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; }
 .dialog-actions { justify-content: flex-end; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; min-width: 0; }

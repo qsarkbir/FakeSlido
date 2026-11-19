@@ -2,7 +2,7 @@ import { createHmac, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import type {
-  AdminState, ControlInput, DeckInput, ErrorResponse, GraphStyle, Presentation,
+  AdminState, DeckInput, ErrorResponse, GraphStyle, Presentation,
   PresentState, PublicQuestion, PublicResults, PublicState, Question, QuestionDefinition,
   ResultsExport, Role, Tally, VoteInput
 } from './types.js';
@@ -305,15 +305,23 @@ export class PollSession {
     this.#notify('admin', 'public', 'present');
   }
 
+  requireSession(sessionId: string) {
+    if (sessionId !== this.sessionId) throw new ApiError(409, 'セッションが更新されました。');
+  }
+
   control(input: unknown) {
-    objectWith(input, ['action', 'questionId', 'confirm'] satisfies (keyof ControlInput)[]);
-    const { action, questionId, confirm } = input;
+    objectWith(input, ['action', 'questionId', 'confirm', 'sessionId']);
+    const { action, questionId, confirm, sessionId } = input;
     requireValue(confirm === undefined || typeof confirm === 'boolean');
     if (action === 'erase') {
       requireValue(questionId === undefined && confirm === true, '全データ消去には確認が必要です。');
+      requireValue(typeof sessionId === 'string' && sessionId.length > 0, '消去するセッションを確認してください。');
+      // 受信開始時のセッションに加え、運営者が画面で確認したセッションも照合する。
+      this.requireSession(sessionId);
       this.reset();
       return;
     }
+    requireValue(sessionId === undefined);
     if (action === 'show-results' || action === 'show-question') {
       requireValue(questionId === undefined);
       const question = this.#presentationQuestion();

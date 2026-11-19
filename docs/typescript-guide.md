@@ -24,7 +24,7 @@ PochiPoll のアプリ本体は TypeScript で書きます。`npm run build` を
 type QuestionType = 'single' | 'multiple';
 ```
 
-`ControlInput` では、`action` の値ごとに必要な項目が変わります。`action: 'erase'` なら `confirm: true` が必要です。このように共通の項目で型を特定できる組み合わせを、判別可能なユニオン型と呼びます。運営画面で `control({ action: 'erase', confirm: true })` と書くと、確認を省いた呼び出しは型エラーになります。
+`ControlInput` では、`action` の値ごとに必要な項目が変わります。`action: 'erase'` なら `confirm: true` と消去対象の `sessionId` が必要です。このように共通の項目で型を特定できる組み合わせを、判別可能なユニオン型と呼びます。運営画面がどちらかを省いて全消去をリクエストすると、型エラーになります。
 
 ## 投票を例にたどる
 

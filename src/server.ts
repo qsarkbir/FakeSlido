@@ -118,9 +118,9 @@ const routes = new Map<string, Route>([
   ['/api/admin/export', ['GET', 'admin', 'export']]
 ]);
 
-function checkParameters(url: URL, allowed?: string) {
-  requireValue([...url.searchParams].length <= (allowed ? 1 : 0)
-    && [...url.searchParams.keys()].every(name => name === allowed));
+function checkParameters(url: URL, ...allowed: string[]) {
+  const names = [...url.searchParams.keys()];
+  requireValue(new Set(names).size === names.length && names.every(name => allowed.includes(name)));
 }
 
 interface AppOptions {
@@ -235,9 +235,11 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
           putJson(response, 200, session.results(url.searchParams.get('questionId')));
           break;
         case 'export': {
-          checkParameters(url, 'format');
+          checkParameters(url, 'format', 'sessionId');
           const format = url.searchParams.get('format');
           requireValue(format === 'csv' || format === 'json');
+          const requestedSession = url.searchParams.get('sessionId');
+          if (requestedSession !== null) session.requireSession(requestedSession);
           const data = session.exportResults();
           response.writeHead(200, {
             'Content-Type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8',
@@ -254,7 +256,7 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
           const sessionId = session.sessionId;
           const input = await readJson(request, operation === 'deck' ? 256 * 1024 : 16 * 1024);
           authorize(role, request);
-          if (sessionId !== session.sessionId) throw new ApiError(409, 'セッションが更新されました。');
+          session.requireSession(sessionId);
           if (operation === 'vote') {
             let ip = request.socket.remoteAddress ?? 'unknown';
             if (transport === 'cloudflare') {
