@@ -494,7 +494,7 @@ test('静的ファイルを固定リストから提供し、QRコードの版と
     assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
   }
   const javascript = [
-    '/participate.js', '/participant-discussion.js', '/admin.js', '/admin-deck.js', '/present.js',
+    '/participate.js', '/participant-discussion.js', '/admin.js', '/admin-deck.js', '/present.js', '/present-discussion.js',
     '/common.js', '/charts.js', '/preflight.js', '/qr.js'
   ];
   const assets = [
@@ -584,6 +584,8 @@ test('通常起動ではコメント API とコメント形式を使用できな
   })).status, 404);
   assert.equal((await call('/api/admin/comments?questionId=manual')).status, 404);
   assert.equal((await call('/api/admin/comments/control', { method: 'POST', data: {} })).status, 404);
+  assert.equal((await call('/api/admin/discussions/control', { method: 'POST', data: {} })).status, 404);
+  assert.equal((await call('/api/admin/export-comments?sessionId=' + before.sessionId)).status, 404);
   assert.equal((await call('/api/public/likes', { token: before.participantCode, method: 'POST', data: {} })).status, 404);
   assert.equal((await state()).deckRevision, before.deckRevision);
 });
@@ -932,4 +934,154 @@ test('混在する質問集の編集用データは順序と設定だけを保�
   assert.deepEqual(drafts[1], first);
   assert.equal((await deck(drafts)).status, 200);
   assert.deepEqual(orderedItems(await state()).map(item => item.questionId), drafts.map(item => item.questionId));
+});
+
+async function presentationFixture() {
+  const app = await discussionFixture();
+  const snapshot = (await app.deck([first, manualTopic, instantTopic])).body;
+  await app.control('open', 'manual');
+  await app.control('open', 'instant');
+  const context = (questionId = 'instant') => ({ sessionId: snapshot.sessionId, questionId,
+    discussionRevision: snapshot.discussions.find(topic => topic.questionId === questionId).discussionRevision });
+  const display = (data, options = {}) => app.call('/api/admin/discussions/control', {
+    method: 'POST', data: { ...context(), ...data }, ...options
+  });
+  const present = (revision) => app.call('/api/present/state' + (revision === undefined ? '' : '?revision=' + revision),
+    { token: snapshot.presentationToken });
+  const add = async (questionId, id) => (await app.post(snapshot, { ...app.requestData(snapshot, questionId, newKey()),
+    clientSubmissionId: id, body: '検証専用-' + id })).body.commentId;
+  const moderate = (commentId, action, expectedVisibility = 'published', questionId = 'instant') =>
+    app.call('/api/admin/comments/control', { method: 'POST', data: { ...context(questionId), commentId, action,
+      expectedVisibility, confirm: true } });
+  const exported = (options = {}) => app.call('/api/admin/export-comments?sessionId=' + snapshot.sessionId, options);
+  return { ...app, snapshot, context, display, present, add, moderate, exported };
+}
+
+test('発表の一覧・注目・紹介済みは公開権限と分離し、非公開と削除を待機中の発表にも通知する', async () => {
+  const { snapshot, display, present, add, moderate, comments, like, requestData } = await presentationFixture();
+  await add('manual', 'pending-never-present');
+  const firstId = await add('instant', 'first');
+  const secondId = await add('instant', 'second');
+  let shown = (await present()).body;
+  assert.deepEqual(shown.discussion.comments.map(c => c.commentId), [firstId, secondId]);
+  assert.deepEqual(Object.keys(shown.discussion.comments[0]).sort(), ['body', 'commentId', 'likes', 'presented']);
+  assert.equal(JSON.stringify(shown).includes('pending-never-present'), false);
+  assert.equal((await display({ action: 'focus', commentId: firstId })).status, 200);
+  assert.equal((await present()).body.discussion.presentation.focusedCommentId, firstId);
+  const before = (await comments(snapshot.participantCode, 'instant')).body.revision;
+  for (let i = 0; i < 2; i++) assert.equal((await display({ action: 'set-presented', commentId: firstId, presented: true })).status, 200);
+  shown = (await present()).body;
+  assert.equal(shown.discussion.presentation.focusedCommentId, null);
+  assert.equal(shown.discussion.comments.find(c => c.commentId === firstId).presented, true);
+  const publicList = (await comments(snapshot.participantCode, 'instant')).body;
+  assert.ok(publicList.revision > before);
+  assert.equal(publicList.comments.length, 2);
+  assert.equal((await like(snapshot, { ...requestData(snapshot, 'instant', newKey()), commentId: firstId, liked: true })).status, 200);
+  assert.equal((await display({ action: 'set-presented', commentId: firstId, presented: false })).status, 200);
+  assert.equal((await present()).body.discussion.comments.find(c => c.commentId === firstId).presented, false);
+  await display({ action: 'focus', commentId: secondId });
+  shown = (await present()).body;
+  const waiting = present(shown.revision);
+  await moderate(secondId, 'hide');
+  const notified = await waiting;
+  assert.equal(notified.status, 200);
+  assert.equal(notified.body.discussion.presentation.focusedCommentId, null);
+  assert.equal(JSON.stringify(notified.body).includes('検証専用-second'), false);
+  assert.equal((await display({ action: 'focus', commentId: secondId })).status, 404);
+  await display({ action: 'focus', commentId: firstId });
+  await moderate(firstId, 'delete');
+  const deleted = (await present()).body.discussion;
+  assert.equal(deleted.presentation.focusedCommentId, null);
+  assert.equal(deleted.comments.length, 0);
+});
+
+test('発表の並び順固定は参加者のいいね順に影響せず、固定中も非公開・削除を除く', async () => {
+  const { snapshot, add, present, display, like, requestData, comments, moderate } = await presentationFixture();
+  const a = await add('instant', 'ordered-a');
+  const b = await add('instant', 'ordered-b');
+  await display({ action: 'configure', hidePresented: false, freezeOrder: true });
+  await like(snapshot, { ...requestData(snapshot, 'instant', newKey()), commentId: b, liked: true });
+  assert.deepEqual((await present()).body.discussion.comments.map(c => c.commentId), [a, b]);
+  assert.deepEqual((await comments(snapshot.participantCode, 'instant')).body.comments.map(c => c.commentId), [b, a]);
+  const c = await add('instant', 'ordered-c');
+  assert.deepEqual((await present()).body.discussion.comments.map(c => c.commentId), [a, b, c]);
+  await moderate(a, 'hide');
+  await moderate(b, 'delete');
+  assert.deepEqual((await present()).body.discussion.comments.map(c => c.commentId), [c]);
+  await moderate(a, 'publish', 'hidden');
+  assert.deepEqual((await present()).body.discussion.comments.map(c => c.commentId), [c, a]);
+  await display({ action: 'configure', hidePresented: true, freezeOrder: false });
+  assert.deepEqual((await present()).body.discussion.comments.map(c => c.commentId), [a, c]);
+});
+
+test('コメント書き出しは公開済みだけを独立した形式に保存し、紹介済みも含める', async () => {
+  const { snapshot, context, add, display, moderate, exported, call, erase, state } = await presentationFixture();
+  const pending = await add('manual', 'export-pending');
+  const published = await add('instant', 'export-public');
+  const hidden = await add('instant', 'export-hidden');
+  const deleted = await add('instant', 'export-deleted');
+  await moderate(hidden, 'hide');
+  await moderate(deleted, 'delete');
+  await display({ action: 'set-presented', commentId: published, presented: true });
+  const result = await exported();
+  assert.equal(result.status, 200);
+  assert.match(result.headers.get('content-disposition'), /pochipoll-comments\.json/);
+  assert.equal(result.body.format, 'pochipoll-comments');
+  assert.equal(result.body.version, 1);
+  assert.equal(result.body.sessionId, snapshot.sessionId);
+  assert.ok(Number.isFinite(Date.parse(result.body.exportedAt)));
+  assert.deepEqual(result.body.topics.map(topic => topic.questionOrder), [2, 3]);
+  assert.deepEqual(result.body.topics[0].comments, []);
+  assert.deepEqual(result.body.topics[1].comments, [{ commentId: published, text: '検証専用-export-public', likes: 0, presented: true }]);
+  assert.deepEqual(result.body.topics[1].settings, { moderationMode: 'instant', maxPostsPerToken: 3 });
+  for (const text of [pending, hidden, deleted, 'author', 'submission', 'voterToken', 'likedByYou', '検証専用-export-hidden']) {
+    assert.equal(JSON.stringify(result.body).includes(text), false);
+  }
+  assert.equal((await call('/api/admin/export?format=json')).body.format, 'fakeslido-results');
+  for (const token of [snapshot.participantCode, snapshot.presentationToken, null]) assert.equal((await exported({ token })).status, 401);
+  assert.equal((await call('/api/admin/export-comments')).status, 400);
+  assert.equal((await call('/api/admin/export-comments?sessionId=stale')).status, 409);
+  assert.equal((await call('/api/admin/export-comments?sessionId=' + context().sessionId + '&includeHidden=true')).status, 400);
+  await erase(snapshot.sessionId);
+  assert.equal((await exported()).status, 409);
+  const next = await state();
+  assert.deepEqual((await call('/api/admin/export-comments?sessionId=' + next.sessionId)).body.topics, []);
+});
+
+test('発表操作は認証・オリジン・世代と公開状態を検証し、不正な値では変更しない', async () => {
+  const { snapshot, context, add, display, present, call, deck, erase } = await presentationFixture();
+  const id = await add('instant', 'validation');
+  const pending = await add('manual', 'not-published');
+  for (const token of [snapshot.participantCode, snapshot.presentationToken, null]) {
+    assert.equal((await display({ action: 'list' }, { token })).status, 401);
+  }
+  assert.equal((await display({ action: 'list' }, { headers: { Origin: 'https://invalid.example' } })).status, 403);
+  for (const data of [{ action: 'unknown' }, { action: 'focus', commentId: '' },
+    { action: 'set-presented', commentId: id, presented: 'true' }, { action: 'list', commentId: id },
+    { action: 'focus', commentId: id, presented: true }, { action: 'configure', hidePresented: true, freezeOrder: 1 },
+    { action: 'configure', hidePresented: true, freezeOrder: true, commentId: id }, { action: 'list', extra: true }]) {
+    assert.equal((await display(data)).status, 400);
+  }
+  assert.equal((await display({ action: 'focus', commentId: pending, ...context('manual') })).status, 404);
+  assert.equal((await display({ action: 'set-presented', commentId: pending, presented: true, ...context('manual') })).status, 404);
+  assert.equal((await display({ action: 'list', sessionId: 'old' })).status, 409);
+  assert.equal((await display({ action: 'list', discussionRevision: context().discussionRevision + 1 })).status, 409);
+  assert.equal((await present()).body.discussion.presentation.focusedCommentId, null);
+  await deck([first, manualTopic, { ...instantTopic, text: '更新後' }]);
+  assert.equal((await display({ action: 'focus', commentId: id })).status, 409);
+  await erase(snapshot.sessionId);
+  assert.equal((await display({ action: 'list' })).status, 409);
+  assert.equal((await call('/api/present/state', { token: snapshot.presentationToken })).status, 410);
+});
+
+test('審査待ちは発表のリビジョンを進めず、選択式への切替ではコメントを配信しない', async () => {
+  const { add, present, control, display, context } = await presentationFixture();
+  await display({ action: 'list', ...context('manual') });
+  const before = (await present()).body;
+  await add('manual', 'pending-revision');
+  assert.equal((await present(before.revision)).status, 204);
+  await control('open', 'one');
+  const choice = (await present()).body;
+  assert.equal(choice.question.questionId, 'one');
+  assert.equal(Object.hasOwn(choice, 'discussion'), false);
 });

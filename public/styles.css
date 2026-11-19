@@ -222,6 +222,14 @@ legend { padding: 0; margin-bottom: .4rem; font-size: .85rem; font-weight: 700; 
 .discussion-comment { display: grid; gap: .6rem; padding: .8rem; border: 1px solid var(--line); border-radius: 9px; }
 .discussion-body { color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 #admin-comments { display: grid; gap: .8rem; margin-top: 1rem; }
+.stage-comments { display: grid; gap: 1rem; margin-top: 1.5rem; }
+.stage-comment { padding: clamp(1rem, 3vw, 2rem); border: 1px solid var(--line); border-radius: 12px; background: var(--paper, #fff); }
+.stage-comment .discussion-body { font-size: clamp(1.2rem, 2.5vw, 2rem); line-height: 1.65; margin: 0; }
+.stage-comment-meta { font-size: 1rem; color: var(--muted); margin: 1rem 0 0; }
+.stage-comment-focus { display: grid; align-content: center; min-height: 45vh; margin-top: 1.5rem; }
+.stage-comment-focus .discussion-body { font-size: clamp(1.6rem, 3.5vw, 3rem); }
+.discussion-display-settings label { display: flex; align-items: center; gap: .5rem; }
+.discussion-display-settings input { width: auto; }
 .discussion-comment .actions { font-size: .85rem; }
 .receipt { margin-top: 1rem; border: 1px solid var(--line); background: #f6f8fc; border-radius: 10px; padding: .85rem; }
 .receipt-label { color: #196044; font-weight: 800; font-size: .85rem; margin-bottom: .25rem; }

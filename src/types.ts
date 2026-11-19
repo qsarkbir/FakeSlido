@@ -61,7 +61,33 @@ export interface AdminDiscussion extends PublicDiscussion {
   everOpened: boolean;
   settings: DiscussionSettings;
   commentCount: number;
+  presentation: DiscussionPresentation;
 }
+
+export interface DiscussionPresentation {
+  focusedCommentId: string | null;
+  hidePresented: boolean;
+  freezeOrder: boolean;
+}
+
+export type PresentedComment = Pick<PublicComment, 'commentId' | 'body' | 'likes' | 'presented'>;
+
+export interface PresentDiscussion extends PublicDiscussion {
+  presentation: DiscussionPresentation;
+  comments: PresentedComment[];
+}
+
+// action で必要な入力を分ける。紹介済みは反転ではなく明示値なので再送しても二重反転しない。
+export type DiscussionControlInput = {
+  sessionId: string;
+  questionId: string;
+  discussionRevision: number;
+} & (
+  | { action: 'list' }
+  | { action: 'focus'; commentId: string }
+  | { action: 'set-presented'; commentId: string; presented: boolean }
+  | { action: 'configure'; hidePresented: boolean; freezeOrder: boolean }
+);
 
 export interface PublicComment {
   commentId: string;
@@ -184,6 +210,7 @@ export interface PresentState extends StateBase {
   participantCode: string;
   mode: Presentation['mode'];
   question: (PublicQuestion & { respondentCount: number; results?: Tally }) | null;
+  discussion?: PresentDiscussion;
 }
 
 export interface AdminState extends StateBase {
@@ -226,6 +253,20 @@ export interface ResultsExport {
     questionText: string;
     questionType: QuestionType;
   })[];
+}
+
+export interface CommentsExport {
+  format: 'pochipoll-comments';
+  version: 1;
+  sessionId: string;
+  exportedAt: string;
+  topics: {
+    questionId: string;
+    questionOrder: number;
+    questionText: string;
+    settings: DiscussionSettings;
+    comments: { commentId: string; text: string; likes: number; presented: boolean }[];
+  }[];
 }
 
 export interface ErrorResponse {

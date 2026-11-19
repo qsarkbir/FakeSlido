@@ -25,6 +25,7 @@ const assets = {
   '/participate.js': 'text/javascript; charset=utf-8',
   '/participant-discussion.js': 'text/javascript; charset=utf-8',
   '/admin-deck.js': 'text/javascript; charset=utf-8',
+  '/present-discussion.js': 'text/javascript; charset=utf-8',
   '/present.js': 'text/javascript; charset=utf-8',
   '/charts.js': 'text/javascript; charset=utf-8',
   '/preflight.js': 'text/javascript; charset=utf-8',
@@ -112,8 +113,8 @@ type Route =
   | [method: 'GET', role: 'public', operation: 'results' | 'comments']
   | [method: 'POST', role: 'public', operation: 'vote' | 'post-comment' | 'set-like']
   | [method: 'PUT', role: 'admin', operation: 'deck']
-  | [method: 'POST', role: 'admin', operation: 'control' | 'comment-control']
-  | [method: 'GET', role: 'admin', operation: 'export' | 'preflight' | 'admin-comments'];
+  | [method: 'POST', role: 'admin', operation: 'control' | 'comment-control' | 'discussion-control']
+  | [method: 'GET', role: 'admin', operation: 'export' | 'preflight' | 'admin-comments' | 'export-comments'];
 const routes = new Map<string, Route>([
   ['/api/public/state', ['GET', 'public', 'state']],
   ['/api/public/results', ['GET', 'public', 'results']],
@@ -130,7 +131,9 @@ const discussionRoutes = new Map<string, Route[]>([
   ['/api/public/comments', [['GET', 'public', 'comments'], ['POST', 'public', 'post-comment']]],
   ['/api/public/likes', [['POST', 'public', 'set-like']]],
   ['/api/admin/comments', [['GET', 'admin', 'admin-comments']]],
-  ['/api/admin/comments/control', [['POST', 'admin', 'comment-control']]]
+  ['/api/admin/comments/control', [['POST', 'admin', 'comment-control']]],
+  ['/api/admin/discussions/control', [['POST', 'admin', 'discussion-control']]],
+  ['/api/admin/export-comments', [['GET', 'admin', 'export-comments']]]
 ]);
 
 function checkParameters(url: URL, ...allowed: string[]) {
@@ -286,6 +289,18 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
           putJson(response, 200, status);
           break;
         }
+        case 'export-comments': {
+          checkParameters(url, 'sessionId');
+          const sessionId = url.searchParams.get('sessionId');
+          requireValue(typeof sessionId === 'string' && sessionId.length > 0);
+          const data = session.exportComments(sessionId);
+          response.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="pochipoll-comments.json"'
+          });
+          response.end(JSON.stringify(data, null, 2));
+          break;
+        }
         case 'export': {
           checkParameters(url, 'format', 'sessionId');
           const format = url.searchParams.get('format');
@@ -320,6 +335,7 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
           } else {
             if (operation === 'deck') session.saveDeck(input);
             else if (operation === 'comment-control') session.controlComment(input);
+            else if (operation === 'discussion-control') session.controlDiscussion(input);
             else session.control(input);
             putJson(response, 200, session.state('admin'));
           }

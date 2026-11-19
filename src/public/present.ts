@@ -3,11 +3,13 @@ import {
 } from './common.js';
 import { chart } from './charts.js';
 import { participantQr } from './qr.js';
+import { discussionStage } from './present-discussion.js';
 import type { PresentState } from '../types.js';
 
 const token = tabCredential('present');
 const joinLink = $('join-link', HTMLAnchorElement);
 let previousCode: string | undefined;
+const discussions = discussionStage($('stage-main'));
 
 function join(code: string) {
   if (previousCode === code) return;
@@ -26,6 +28,11 @@ function join(code: string) {
 function render(state: PresentState) {
   join(state.participantCode);
   $('stage').hidden = false;
+  if (state.discussion) {
+    discussions.render(state.discussion, state.sessionId);
+    return;
+  }
+  discussions.reset();
   const { question } = state;
   if (!question) {
     $('stage-main').replaceChildren(emptyState('投票の開始をお待ちください', '質問が始まったら、ここに表示されます。'));
@@ -45,10 +52,15 @@ function render(state: PresentState) {
     el('p', { cls: 'chart-summary', text: question.respondentCount + ' 人が回答' }));
 }
 
-poll('/api/present/state', token, { interval: 0, onState: render, onInvalid: text => {
+poll('/api/present/state', token, { interval: 0, onState: render, onConnection: connection => {
+  if (connection === 'reconnecting') {
+    discussions.reset();
+    $('stage-main').replaceChildren(emptyState('再接続しています', '最新の公開状態を確認するまで表示を停止します。'));
+  }
+}, onInvalid: text => {
   storageSet(sessionStorage, 'fakeslido:present', null);
   $('stage').hidden = true;
-  $('stage-main').replaceChildren();
+  discussions.reset();
   $('qr').replaceChildren();
   joinLink.removeAttribute('href');
   message(text);

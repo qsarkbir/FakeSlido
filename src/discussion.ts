@@ -1,7 +1,8 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { ApiError, idPattern, objectWith, requireValue, textFits } from './validation.js';
 import type {
-  AdminComment, CommentControlInput, CommentReceipt, DiscussionDefinition, DiscussionSettings, LikeReceipt, PublicComment
+  AdminComment, CommentControlInput, CommentReceipt, DiscussionDefinition, DiscussionPresentation,
+  DiscussionSettings, LikeReceipt, PresentedComment, PublicComment
 } from './types.js';
 
 export const commentsPerTopic = 200;
@@ -40,6 +41,8 @@ export class Discussion {
   #sequence = 0;
   #likeCount = 0;
   #key: Buffer;
+  #presentation: DiscussionPresentation = { focusedCommentId: null, hidePresented: true, freezeOrder: false };
+  #order: string[] = [];
 
   constructor(private readonly questionId: string, sessionKey: Buffer, public revision: number) {
     this.#key = sessionKey;
@@ -119,6 +122,51 @@ export class Discussion {
       ({ commentId, body, visibility, presented, likes: likes.size }));
   }
 
+  get presentation(): DiscussionPresentation {
+    return { ...this.#presentation };
+  }
+
+  #published(commentId: string) {
+    const comment = this.#comments.get(commentId);
+    if (comment?.visibility !== 'published') throw new ApiError(404, '公開中のコメントが見つかりません。');
+    return comment;
+  }
+
+  focus(commentId: string | null) {
+    if (commentId !== null) this.#published(commentId);
+    this.#presentation.focusedCommentId = commentId;
+  }
+
+  setPresented(commentId: string, presented: boolean) {
+    const comment = this.#published(commentId);
+    const changed = comment.presented !== presented;
+    comment.presented = presented;
+    if (presented && this.#presentation.focusedCommentId === commentId) this.focus(null);
+    return changed;
+  }
+
+  configure(hidePresented: boolean, freezeOrder: boolean) {
+    if (freezeOrder && !this.#presentation.freezeOrder) {
+      this.#order = this.publicComments().map(comment => comment.commentId);
+    }
+    if (!freezeOrder) this.#order = [];
+    this.#presentation.hidePresented = hidePresented;
+    this.#presentation.freezeOrder = freezeOrder;
+  }
+
+  presentComments(): PresentedComment[] {
+    let comments = this.publicComments();
+    if (this.#presentation.freezeOrder) {
+      const current = new Map(comments.map(comment => [comment.commentId, comment]));
+      // 固定するのは ID の順番だけ。本文の公開可否は毎回検証し、新規公開は末尾に加える。
+      this.#order = this.#order.filter(id => current.has(id));
+      const known = new Set(this.#order);
+      this.#order.push(...comments.filter(comment => !known.has(comment.commentId)).map(comment => comment.commentId));
+      comments = this.#order.flatMap(id => { const comment = current.get(id); return comment ? [comment] : []; });
+    }
+    return comments.map(({ commentId, body, likes, presented }) => ({ commentId, body, likes, presented }));
+  }
+
   control(input: CommentControlInput) {
     const comment = this.#comments.get(input.commentId);
     if (!comment) throw new ApiError(404, 'コメントが見つかりません。');
@@ -133,6 +181,10 @@ export class Discussion {
       this.#comments.delete(comment.commentId);
     } else {
       comment.visibility = input.action === 'publish' ? 'published' : 'hidden';
+    }
+    if (input.action !== 'publish') {
+      this.#order = this.#order.filter(id => id !== comment.commentId);
+      if (this.#presentation.focusedCommentId === comment.commentId) this.focus(null);
     }
     return wasPublic || input.action === 'publish';
   }
