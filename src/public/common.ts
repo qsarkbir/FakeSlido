@@ -1,5 +1,6 @@
-import type { AdminState, ControlInput, DeckInput, GraphStyle, PreflightStatus, PresentState, PublicResults, PublicState,
-  VoteInput, VoteReceipt } from '../types.js';
+import type { AdminState, CommentReceipt, ControlInput, DeckInput, GraphStyle, LikeReceipt, PostCommentInput,
+  PreflightStatus, PresentState, PublicComments, PublicResults, PublicState, SetLikeInput, VoteInput, VoteReceipt
+} from '../types.js';
 
 // DOM の検索結果は null の場合がある。型を指定したときは実際の要素も検査する。
 export function $(id: string): HTMLElement;
@@ -112,11 +113,13 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT';
   data?: unknown;
   download?: boolean;
+  voterToken?: string;
 }
 
-async function fetchResponse(path: string, token: Credential, { method = 'GET', data }: RequestOptions = {}) {
+async function fetchResponse(path: string, token: Credential, { method = 'GET', data, voterToken }: RequestOptions = {}) {
   const headers = new Headers({ Authorization: 'Bearer ' + token });
   if (data !== undefined) headers.set('Content-Type', 'application/json');
+  if (voterToken !== undefined) headers.set('X-PochiPoll-Voter', voterToken);
   const response = await fetch(path, {
     method, headers, body: data === undefined ? undefined : JSON.stringify(data),
     signal: AbortSignal.timeout(25_000), cache: 'no-store', credentials: 'omit'
@@ -130,6 +133,8 @@ interface Mutations {
   '/api/admin/deck': { options: { method: 'PUT'; data: Omit<DeckInput, 'questions'> & { questions: unknown[] } };
     response: AdminState };
   '/api/public/vote': { options: { method: 'POST'; data: VoteInput }; response: VoteReceipt };
+  '/api/public/comments': { options: { method: 'POST'; data: PostCommentInput }; response: CommentReceipt };
+  '/api/public/likes': { options: { method: 'POST'; data: SetLikeInput }; response: LikeReceipt };
 }
 
 export type ExportFormat = 'csv' | 'json';
@@ -142,12 +147,16 @@ export function request<Path extends keyof Mutations>(
 export function request(path: `/api/public/results?questionId=${string}`, token: Credential): Promise<PublicResults>;
 export function request(path: '/api/admin/preflight', token: Credential): Promise<PreflightStatus>;
 export function request(path: '/api/public/state', token: Credential): Promise<PublicState>;
+export function request(
+  path: `/api/public/comments?questionId=${string}`, token: Credential, options: { voterToken: string }
+): Promise<PublicComments | null>;
 export function request(path: '/api/present/state', token: Credential): Promise<PresentState>;
 export function request(
   path: ExportPath, token: Credential, options: { download: true }
 ): Promise<Blob>;
 export async function request(path: string, token: Credential, options: RequestOptions = {}): Promise<unknown> {
   const response = await fetchResponse(path, token, options);
+  if (response.status === 204) return null;
   return options.download ? response.blob() : response.json();
 }
 

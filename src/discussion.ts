@@ -41,7 +41,7 @@ export class Discussion {
   #likeCount = 0;
   #key: Buffer;
 
-  constructor(private readonly questionId: string, sessionKey: Buffer) {
+  constructor(private readonly questionId: string, sessionKey: Buffer, public revision: number) {
     this.#key = sessionKey;
   }
 
@@ -100,7 +100,7 @@ export class Discussion {
       this.#likeCount--;
     }
     const receipt: LikeReceipt = { commentId, liked, likes: comment.likes.size };
-    return receipt;
+    return { receipt, changed };
   }
 
   publicComments(voterToken?: string): PublicComment[] {

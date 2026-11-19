@@ -97,6 +97,7 @@ export class PollSession {
   private readonly rateTimer: ReturnType<typeof setInterval>;
   #voteRevision = 0;
   #discussionRevision = 0;
+  #commentRevision = 0;
   #expiry?: ReturnType<typeof setTimeout>;
   #expiresAt = 0;
   #rateCounts = { vote: new Map<string, number>(), comment: new Map<string, number>(), like: new Map<string, number>() };
@@ -325,7 +326,10 @@ export class PollSession {
     requireValue(textFits(body, 300), 'コメントは1〜300文字で入力してください。');
     const { receipt, added } = topic.discussion.post(voterToken, clientSubmissionId, body, topic.settings,
       this.#discussionUsage('size') >= commentsPerSession);
-    if (added) this.#notify('admin');
+    if (added) {
+      if (receipt.visibility === 'published') topic.discussion.revision = ++this.#commentRevision;
+      this.#notify('admin');
+    }
     return receipt;
   }
 
@@ -337,13 +341,18 @@ export class PollSession {
     const { topic, voterToken } = this.#discussionRequest(input);
     const { commentId, liked } = input;
     requireValue(typeof commentId === 'string' && idPattern.test(commentId) && typeof liked === 'boolean');
-    return topic.discussion.setLike(commentId, voterToken, liked, this.#discussionUsage('likeCount') >= likesPerSession);
+    const { receipt, changed } = topic.discussion.setLike(commentId, voterToken, liked,
+      this.#discussionUsage('likeCount') >= likesPerSession);
+    if (changed) topic.discussion.revision = ++this.#commentRevision;
+    return receipt;
   }
 
-  publicComments(id: unknown, voterToken?: unknown): PublicComments {
+  publicComments(id: unknown, voterToken?: unknown, revision?: number): PublicComments | null {
     requireValue(voterToken === undefined || typeof voterToken === 'string' && tokenPattern.test(voterToken));
     const topic = this.#topic(id, true);
+    if (revision === topic.discussion.revision) return null;
     return { sessionId: this.sessionId, questionId: topic.questionId, discussionRevision: topic.discussionRevision,
+      revision: topic.discussion.revision,
       comments: topic.discussion.publicComments(voterToken) };
   }
 
@@ -356,12 +365,14 @@ export class PollSession {
   #questionFromDraft(draft: QuestionDefinition | DiscussionDefinition, previous?: StoredQuestion): StoredQuestion {
     if (draft.type === 'discussion') {
       const before = previous?.type === 'discussion' ? previous : undefined;
+      const discussion = before?.discussion ?? new Discussion(draft.questionId, this.#sessionKey, ++this.#commentRevision);
+      if (before && before.text !== draft.text) discussion.revision = ++this.#commentRevision;
       return {
         ...draft,
         everOpened: before?.everOpened ?? false,
         isOpen: before?.isOpen ?? false,
         discussionRevision: before?.text === draft.text ? before.discussionRevision : ++this.#discussionRevision,
-        discussion: before?.discussion ?? new Discussion(draft.questionId, this.#sessionKey)
+        discussion
       };
     }
     const before = previous?.type === 'discussion' ? undefined : previous;

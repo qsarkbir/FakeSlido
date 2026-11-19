@@ -1,6 +1,6 @@
 # コメント API の開発メモ
 
-P3-1 の結合テストは `createApp({ ..., discussionEnabled: true })` でコメント API を有効にします。通常の `npm start` では、コメント API と質問集の `discussion` 形式は無効です。一般公開は、審査と削除を含む受入テストを実施し、運営者が手動で確認したあとに判断します。
+結合テストは `createApp({ ..., discussionEnabled: true })` でコメント機能を有効にします。通常の `npm start` では、コメント API と質問集の `discussion` 形式は無効です。一般公開は、審査と削除を含む受入テストを実施し、運営者が手動で確認したあとに判断します。
 
 ## お題の設定
 
@@ -23,7 +23,7 @@ P3-1 の結合テストは `createApp({ ..., discussionEnabled: true })` でコ�
 
 | API | 認証 | 入力 |
 | --- | --- | --- |
-| `GET /api/public/comments` | 参加コード | クエリに `questionId`。任意の `X-PochiPoll-Voter` ヘッダーで自分の投稿・いいねを判定 |
+| `GET /api/public/comments` | 参加コード | クエリに `questionId` と任意の `revision`。任意の `X-PochiPoll-Voter` ヘッダーで自分の投稿・いいねを判定 |
 | `POST /api/public/comments` | 参加コード | JSON に `sessionId`、`questionId`、`discussionRevision`、`voterToken`、`clientSubmissionId`、`body` |
 | `POST /api/public/likes` | 参加コード | JSON に `sessionId`、`questionId`、`discussionRevision`、`voterToken`、`commentId`、真偽値の `liked` |
 | `GET /api/admin/comments` | 管理キー | クエリに `questionId` |
@@ -32,4 +32,8 @@ P3-1 の結合テストは `createApp({ ..., discussionEnabled: true })` でコ�
 
 参加者一覧には公開済みのコメントだけが、いいね数の降順、同数なら投稿順で並びます。受付停止後も公開済みコメントを取得できます。投票・投稿・いいねの短期レート制限は操作ごとに適用し、コメントは1お題200件、1セッション1,000件まで保持します。いいねは1セッション10万件までです。
 
-生の参加者トークンや内部の匿名識別子は応答に含めません。投票集計の CSV と JSON は選択式の結果を返します。P3-1 の API 検証は `npm test` で実行できます。
+一覧の応答に含まれる `revision` を次回のクエリに指定すると、変更がない場合は HTTP 204 が返ります。この値は同じセッション・お題・参加者トークンで使います。審査待ちの投稿で公開コメント一覧の値が進むことはありません。
+
+参加画面は選択中のお題の一覧を取得し、投稿に失敗してもページを開いている間は本文を保持します。再送は利用者が行い、同じ本文には同じ送信 ID を使います。投稿本文はブラウザの保存領域に書き込みません。
+
+生の参加者トークンや内部の匿名識別子は応答に含めません。投票集計の CSV と JSON は選択式の結果を返します。API 検証は `npm test` で実行できます。
