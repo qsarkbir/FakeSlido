@@ -3,6 +3,7 @@ import {
   storageGet, storageSet, styleLabels, emptyState, statusPill, errorMessage, isRecord, RequestError
 } from './common.js';
 import { chart } from './charts.js';
+import { setupPreflight } from './preflight.js';
 import type { ExportFormat } from './common.js';
 import type { AdminState, ControlInput, GraphStyle, Presentation, QuestionDefinition } from '../types.js';
 
@@ -31,6 +32,7 @@ const eraseError = $('erase-error');
 const eraseDownloads = { csv: $('erase-csv', HTMLButtonElement), json: $('erase-json', HTMLButtonElement) };
 let eraseTarget: string | null = null;
 let erasePending: 'erase' | 'export' | undefined;
+const updatePreflight = setupPreflight(key, () => state);
 
 // 編集用のオブジェクトには回答数や公開状態を含めない。質問集 JSON の項目を保つ。
 function draft(question: QuestionDefinition): QuestionDefinition {
@@ -65,6 +67,7 @@ function applyState(next: AdminState) {
   updateBackupControls();
   $('add', HTMLButtonElement).disabled = state.questions.length >= 50;
   updateEraseDialog(next);
+  updatePreflight();
   render();
 }
 
@@ -426,7 +429,7 @@ openPresent.addEventListener('click', () => {
   window.open('/present#' + currentState().presentationToken, '_blank', 'noopener,noreferrer');
 });
 
-poll('/api/admin/state', key, { interval: 0, onState: applyState, onInvalid: text => {
+poll('/api/admin/state', key, { interval: 0, onState: applyState, onConnection: updatePreflight, onInvalid: text => {
   storageSet(sessionStorage, 'fakeslido:admin', null);
   $('workspace').hidden = true;
   copyLink.disabled = true;

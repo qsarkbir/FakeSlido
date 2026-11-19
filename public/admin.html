@@ -6,6 +6,7 @@
   <title>運営コンソール | FakeSlido</title>
   <link rel="icon" href="/mark.svg">
   <link rel="stylesheet" href="/styles.css">
+  <script src="/vendor/qrcode.js" defer></script>
   <script type="module" src="/admin.js"></script>
 </head>
 <body data-page="admin">
@@ -20,6 +21,7 @@
     <section class="page-heading">
       <div><h1>セッション運営</h1><p>質問の準備から、投票受付、結果の公開まで。</p></div>
       <div class="actions">
+        <button id="preflight">本番前チェック</button>
         <button id="copy-link" disabled>参加URLをコピー</button>
         <button id="open-present" class="primary" disabled>発表画面を開く ↗</button>
       </div>
@@ -82,6 +84,35 @@
       <footer class="actions dialog-actions">
         <button type="button" id="erase-cancel" autofocus>キャンセル</button>
         <button type="button" id="erase-confirm" class="danger-link">消去する</button>
+      </footer>
+    </div>
+  </dialog>
+  <dialog id="preflight-dialog" aria-labelledby="preflight-title">
+    <div class="preflight-content">
+      <h2 id="preflight-title">本番前チェック</h2>
+      <dl class="preflight-results" aria-live="polite">
+        <div><dt>サーバー応答</dt><dd id="preflight-server"></dd></div>
+        <div><dt>運営認証</dt><dd id="preflight-admin"></dd></div>
+        <div><dt>公開オリジン設定</dt><dd id="preflight-origin"></dd></div>
+        <div><dt>参加URL</dt><dd id="preflight-join"></dd></div>
+        <div><dt>QR コード生成</dt><dd id="preflight-qr"></dd></div>
+        <div><dt>発表画面の API</dt><dd id="preflight-present"></dd></div>
+      </dl>
+      <section id="preflight-preparation" class="preflight-preparation" aria-live="polite" hidden>
+        <h3>注意</h3>
+        <ul id="preflight-warnings"></ul>
+      </section>
+      <section class="preflight-manual">
+        <h3>別端末での確認は未実施</h3>
+        <ol>
+          <li>本番用と区別できるテスト質問を追加し、「受付を開始して発表」を押します。</li>
+          <li>「発表画面を開く」で表示を確認します。HTTPS で公開したら、スマートフォンなどで QR を読み取るか参加URLを開き、テスト投票します。</li>
+          <li>確認後はテスト質問の「票をリセット」または「質問を削除」を行い、本番用の質問を発表対象にします。</li>
+        </ol>
+      </section>
+      <footer class="actions dialog-actions">
+        <button type="button" id="preflight-close" autofocus>閉じる</button>
+        <button type="button" id="preflight-retry">再チェック</button>
       </footer>
     </div>
   </dialog>

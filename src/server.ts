@@ -6,7 +6,7 @@ import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { ApiError, PollSession, requireValue, tokenPattern } from './session.js';
 import type {
-  AdminState, ErrorResponse, PresentState, PublicResults, PublicState, ResultsExport, Role, VoteReceipt
+  AdminState, ErrorResponse, PreflightStatus, PresentState, PublicResults, PublicState, ResultsExport, Role, VoteReceipt
 } from './types.js';
 
 const headers = {
@@ -23,12 +23,14 @@ const assets = {
   '/participate.js': 'text/javascript; charset=utf-8',
   '/present.js': 'text/javascript; charset=utf-8',
   '/charts.js': 'text/javascript; charset=utf-8',
+  '/preflight.js': 'text/javascript; charset=utf-8',
+  '/qr.js': 'text/javascript; charset=utf-8',
   '/vendor/qrcode.js': 'text/javascript; charset=utf-8',
   '/mark.svg': 'image/svg+xml'
 };
 const digest = (value: string) => createHash('sha256').update(value).digest();
 
-type JsonResponse = AdminState | ErrorResponse | PresentState | PublicResults | PublicState | VoteReceipt;
+type JsonResponse = AdminState | ErrorResponse | PreflightStatus | PresentState | PublicResults | PublicState | VoteReceipt;
 
 function putJson(response: ServerResponse, status: number, value: JsonResponse) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -106,13 +108,14 @@ type Route =
   | [method: 'POST', role: 'public', operation: 'vote']
   | [method: 'PUT', role: 'admin', operation: 'deck']
   | [method: 'POST', role: 'admin', operation: 'control']
-  | [method: 'GET', role: 'admin', operation: 'export'];
+  | [method: 'GET', role: 'admin', operation: 'export' | 'preflight'];
 const routes = new Map<string, Route>([
   ['/api/public/state', ['GET', 'public', 'state']],
   ['/api/public/results', ['GET', 'public', 'results']],
   ['/api/public/vote', ['POST', 'public', 'vote']],
   ['/api/present/state', ['GET', 'present', 'state']],
   ['/api/admin/state', ['GET', 'admin', 'state']],
+  ['/api/admin/preflight', ['GET', 'admin', 'preflight']],
   ['/api/admin/deck', ['PUT', 'admin', 'deck']],
   ['/api/admin/control', ['POST', 'admin', 'control']],
   ['/api/admin/export', ['GET', 'admin', 'export']]
@@ -140,7 +143,9 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
   }
   const adminHash = digest(adminKey);
   adminKey = undefined;
-  if (!['local', 'cloudflare', 'https-proxy'].includes(transport)) throw new Error('TRANSPORT が不正です。');
+  if (transport !== 'local' && transport !== 'cloudflare' && transport !== 'https-proxy') {
+    throw new Error('TRANSPORT が不正です。');
+  }
   const configuredUrl = baseUrl ? new URL(baseUrl) : null;
   if (configuredUrl && (configuredUrl.pathname !== '/' || configuredUrl.username || configuredUrl.password
     || configuredUrl.search || configuredUrl.hash)) {
@@ -234,6 +239,14 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
           checkParameters(url, 'questionId');
           putJson(response, 200, session.results(url.searchParams.get('questionId')));
           break;
+        case 'preflight': {
+          checkParameters(url);
+          const { sessionId, participantCode, presentationToken } = session;
+          // 本番前チェックは読み取り専用。セッションの有効期限も変更しない。
+          const status: PreflightStatus = { origin, transport, sessionId, participantCode, presentationToken };
+          putJson(response, 200, status);
+          break;
+        }
         case 'export': {
           checkParameters(url, 'format', 'sessionId');
           const format = url.searchParams.get('format');

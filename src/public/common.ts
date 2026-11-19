@@ -1,4 +1,4 @@
-import type { AdminState, ControlInput, DeckInput, GraphStyle, PresentState, PublicResults, PublicState,
+import type { AdminState, ControlInput, DeckInput, GraphStyle, PreflightStatus, PresentState, PublicResults, PublicState,
   VoteInput, VoteReceipt } from '../types.js';
 
 // DOM の検索結果は null の場合がある。型を指定したときは実際の要素も検査する。
@@ -138,6 +138,8 @@ export function request<Path extends keyof Mutations>(
   path: Path, token: Credential, options: Mutations[NoInfer<Path>]['options']
 ): Promise<Mutations[Path]['response']>;
 export function request(path: `/api/public/results?questionId=${string}`, token: Credential): Promise<PublicResults>;
+export function request(path: '/api/admin/preflight', token: Credential): Promise<PreflightStatus>;
+export function request(path: '/api/present/state', token: Credential): Promise<PresentState>;
 export function request(
   path: ExportPath, token: Credential, options: { download: true }
 ): Promise<Blob>;
@@ -152,18 +154,22 @@ interface StateByPath {
   '/api/present/state': PresentState;
 }
 
+export type PollConnection = 'connected' | 'reconnecting' | 'invalid';
+
 interface PollOptions<State> {
   interval: number;
   onState: (state: State) => void | Promise<void>;
   onUnchanged?: () => void;
   onInvalid: (text: string) => void;
+  onConnection?: (state: PollConnection) => void;
 }
 
 export async function poll<Path extends keyof StateByPath>(
-  path: Path, token: Credential, { interval, onState, onUnchanged, onInvalid }: PollOptions<StateByPath[Path]>
+  path: Path, token: Credential, { interval, onState, onUnchanged, onInvalid, onConnection }: PollOptions<StateByPath[Path]>
 ) {
   if (!token) {
     connection('未接続', true);
+    onConnection?.('invalid');
     onInvalid('アクセス用URLから開いてください。');
     return;
   }
@@ -182,15 +188,18 @@ export async function poll<Path extends keyof StateByPath>(
         revision = data.revision;
       }
       connection('接続済み');
+      onConnection?.('connected');
       delay = interval;
       retries = 0;
     } catch (error) {
       if (error instanceof RequestError && (error.status === 401 || error.status === 410)) {
         connection('未接続', true);
+        onConnection?.('invalid');
         onInvalid(error.message);
         return;
       }
       connection('再接続中', true);
+      onConnection?.('reconnecting');
       revision = null;
       delay = Math.max((error instanceof RequestError ? error.retryAfter : 0) * 1000,
         Math.min(1000 * 2 ** retries, 15_000));

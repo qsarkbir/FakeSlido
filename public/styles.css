@@ -163,7 +163,16 @@ button.icon { width: 42px; font-size: 1.4rem; padding: 0; }
 .chart-note { margin-top: .8rem; font-size: .8em; }
 dialog { color: var(--ink); width: min(520px, calc(100% - 2rem)); border: 1px solid var(--line); border-radius: 16px; padding: 0; max-height: 90vh; }
 dialog::backdrop { background: #172134a8; }
-#edit-form, .erase-dialog-content { display: grid; gap: .9rem; padding: 1.25rem; }
+#edit-form, .erase-dialog-content, .preflight-content { display: grid; gap: .9rem; padding: 1.25rem; }
+.preflight-results { margin: 0; }
+.preflight-results div { padding: .45rem 0; border-bottom: 1px solid var(--line); }
+.preflight-results dt { font-weight: 700; }
+.preflight-results dd { margin: .2rem 0 0; display: flex; gap: .5rem; align-items: baseline; color: var(--soft-ink); font-size: .85rem; }
+.preflight-status { flex: none; padding: .08rem .45rem; border-radius: 6px; background: #edf0f6; font-weight: 700; }
+.preflight-status.ok { color: #006852; background: #e3f6ef; }
+.preflight-status.error { color: #a72d4c; background: #fbe9ee; }
+.preflight-preparation { padding: .65rem .8rem; border-radius: 9px; background: #fff3d8; color: #674b11; }
+.preflight-preparation ul, .preflight-manual ol { margin: .25rem 0 0; padding-left: 1.3rem; font-size: .87rem; }
 .erase-counts { margin: 0; display: grid; gap: .45rem; padding: .85rem; border: 1px solid var(--line); border-radius: 9px; }
 .erase-counts div { display: flex; justify-content: space-between; gap: .8rem; }
 .erase-counts dd { margin: 0; font-weight: 800; font-variant-numeric: tabular-nums; }

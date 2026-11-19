@@ -1,5 +1,6 @@
 // ユニオン型で、認証や表示に使える文字列を明示する。
 export type Role = 'admin' | 'public' | 'present';
+export type Transport = 'local' | 'cloudflare' | 'https-proxy';
 export type QuestionType = 'single' | 'multiple';
 export type GraphStyle = 'horizontal' | 'vertical' | 'donut' | 'stacked';
 
@@ -87,6 +88,14 @@ export interface AdminState extends StateBase {
   presentationToken: string;
   presentation: Presentation;
   questions: (PublicQuestion & { everOpened: boolean; results: Tally })[];
+}
+
+export interface PreflightStatus {
+  origin: string;
+  transport: Transport;
+  sessionId: string;
+  participantCode: string;
+  presentationToken: string;
 }
 
 export interface PublicResults extends Tally {
