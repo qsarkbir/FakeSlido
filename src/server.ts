@@ -1,9 +1,13 @@
 import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { ApiError, PollSession, requireValue, tokenPattern } from './session.js';
+import type {
+  AdminState, ErrorResponse, PresentState, PublicResults, PublicState, ResultsExport, Role, VoteReceipt
+} from './types.js';
 
 const headers = {
   'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -22,24 +26,27 @@ const assets = {
   '/vendor/qrcode.js': 'text/javascript; charset=utf-8',
   '/mark.svg': 'image/svg+xml'
 };
-const digest = value => createHash('sha256').update(value).digest();
+const digest = (value: string) => createHash('sha256').update(value).digest();
 
-function putJson(response, status, value) {
+type JsonResponse = AdminState | ErrorResponse | PresentState | PublicResults | PublicState | VoteReceipt;
+
+function putJson(response: ServerResponse, status: number, value: JsonResponse) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(value));
 }
 
-async function readJson(request, limit) {
+// JSON.parse が成功しても、期待した形式とは限らない。呼び出し元に unknown を返して検証を促す。
+async function readJson(request: IncomingMessage, limit: number): Promise<unknown> {
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new ApiError(415, 'JSON形式のリクエストが必要です。');
   }
   if (Number(request.headers['content-length']) > limit) {
     throw new ApiError(413, '送信データが大きすぎます。');
   }
-  const raw = await new Promise((resolve, reject) => {
+  const raw = await new Promise<Buffer>((resolve, reject) => {
     let size = 0;
-    const chunks = [];
-    const finish = (error) => {
+    const chunks: Buffer[] = [];
+    const finish = (error?: Error) => {
       clearTimeout(timer);
       request.off('data', receive);
       request.off('end', onEnd);
@@ -52,7 +59,7 @@ async function readJson(request, limit) {
         resolve(Buffer.concat(chunks, size));
       }
     };
-    const receive = chunk => {
+    const receive = (chunk: Buffer) => {
       size += chunk.length;
       if (size > limit) finish(new ApiError(413, '送信データが大きすぎます。'));
       else chunks.push(chunk);
@@ -72,13 +79,13 @@ async function readJson(request, limit) {
   }
 }
 
-function csvText(value) {
+function csvText(value: string) {
   const text = String(value);
   const safe = /^[\t\r\n]|^\s*[=+\-@＝＋－＠]/u.test(text) ? "'" + text : text;
   return '"' + safe.replaceAll('"', '""') + '"';
 }
 
-function csvExport(data) {
+function csvExport(data: ResultsExport) {
   const rows = ['sessionId,questionId,questionOrder,questionText,questionType,optionIndex,optionText,optionVotes,respondentCount,totalSelections,percentage'];
   for (const q of data.questions) {
     for (const option of q.options) {
@@ -92,7 +99,15 @@ function csvExport(data) {
   return '\ufeff' + rows.join('\r\n') + '\r\n';
 }
 
-const routes = new Map([
+// タプルのユニオンで、操作ごとに許すメソッドと認証ロールの組を定義する。
+type Route =
+  | [method: 'GET', role: Role, operation: 'state']
+  | [method: 'GET', role: 'public', operation: 'results']
+  | [method: 'POST', role: 'public', operation: 'vote']
+  | [method: 'PUT', role: 'admin', operation: 'deck']
+  | [method: 'POST', role: 'admin', operation: 'control']
+  | [method: 'GET', role: 'admin', operation: 'export'];
+const routes = new Map<string, Route>([
   ['/api/public/state', ['GET', 'public', 'state']],
   ['/api/public/results', ['GET', 'public', 'results']],
   ['/api/public/vote', ['POST', 'public', 'vote']],
@@ -103,13 +118,22 @@ const routes = new Map([
   ['/api/admin/export', ['GET', 'admin', 'export']]
 ]);
 
-function checkParameters(url, allowed) {
+function checkParameters(url: URL, allowed?: string) {
   requireValue([...url.searchParams].length <= (allowed ? 1 : 0)
     && [...url.searchParams.keys()].every(name => name === allowed));
 }
 
+interface AppOptions {
+  adminKey?: string;
+  baseUrl?: string;
+  transport?: string;
+  idleMs?: number;
+  voteLimit?: number;
+  waitMs?: number;
+}
+
 export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_200_000,
-  voteLimit = 600, waitMs = 20_000 } = {}) {
+  voteLimit = 600, waitMs = 20_000 }: AppOptions = {}) {
   if (typeof adminKey !== 'string' || !tokenPattern.test(adminKey)
     || Buffer.from(adminKey, 'base64url').toString('base64url') !== adminKey) {
     throw new Error('ADMIN_KEY は32バイトの乱数をBase64URLで符号化してください。');
@@ -142,7 +166,7 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
   }
   const session = new PollSession({ idleMs, voteLimit });
 
-  function authorize(role, request) {
+  function authorize(role: Role, request: IncomingMessage) {
     const match = /^Bearer ([A-Za-z0-9_-]{22,43})$/.exec(request.headers.authorization ?? '');
     if (!match) throw new ApiError(401, 'この画面のアクセス用URLを開いてください。');
     const token = match[1];
@@ -165,13 +189,17 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
     for (const [name, value] of Object.entries(headers)) response.setHeader(name, value);
     response.setHeader('Cache-Control', 'no-store');
     try {
-      const origin = configuredUrl?.origin ?? 'http://127.0.0.1:' + server.address().port;
+      const address = server.address();
+      const origin = configuredUrl?.origin ?? (address && typeof address !== 'string'
+        ? 'http://127.0.0.1:' + address.port : undefined);
+      if (origin === undefined) throw new Error('待受ポートを取得できません。');
       if (request.headers.host !== new URL(origin).host) throw new ApiError(421, 'アクセスURLを確認してください。');
       if (transport !== 'local') response.setHeader('Strict-Transport-Security', 'max-age=31536000');
-      const url = new URL(request.url, origin);
-      if (url.origin !== origin || !request.url.startsWith('/')) throw new ApiError(400, 'URLが不正です。');
+      const target = request.url ?? '';
+      const url = new URL(target, origin);
+      if (url.origin !== origin || !target.startsWith('/')) throw new ApiError(400, 'URLが不正です。');
       const asset = staticFiles.get(url.pathname);
-      if (asset && ['GET', 'HEAD'].includes(request.method)) {
+      if (asset && (request.method === 'GET' || request.method === 'HEAD')) {
         response.setHeader('Cache-Control', documents.includes(url.pathname) ? 'no-store' : 'no-cache');
         response.writeHead(200, { 'Content-Type': asset.contentType, 'Content-Length': asset.body.length });
         response.end(request.method === 'HEAD' ? undefined : asset.body);
@@ -236,8 +264,8 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
               }
               ip = forwardedIp;
             }
-            session.vote(input, ip);
-            putJson(response, 200, { sessionId: session.sessionId, voteRevision: input.voteRevision });
+            const voteRevision = session.vote(input, ip);
+            putJson(response, 200, { sessionId: session.sessionId, voteRevision });
           } else {
             if (operation === 'deck') session.saveDeck(input);
             else session.control(input);
@@ -247,9 +275,9 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
       }
     } catch (error) {
       if (response.destroyed) return;
-      if (error.status === 429) response.setHeader('Retry-After', '3');
-      if (!request.complete) response.setHeader('Connection', 'close');
       const safe = error instanceof ApiError;
+      if (safe && error.status === 429) response.setHeader('Retry-After', '3');
+      if (!request.complete) response.setHeader('Connection', 'close');
       putJson(response, safe ? error.status : 500, {
         error: safe ? error.message : 'サーバーで処理できませんでした。',
         ...(safe && error.code && { code: error.code })
@@ -261,7 +289,7 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
   return server;
 }
 
-function positiveInteger(value, fallback, max) {
+function positiveInteger(value: string | undefined, fallback: number, max: number) {
   if (value === undefined) return fallback;
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1 || number > max) throw new Error('数値設定を確認してください。');
@@ -274,7 +302,7 @@ function start() {
   const voteLimit = positiveInteger(process.env.VOTES_PER_MINUTE, 600, 100_000);
   const { BASE_URL: baseUrl, TRANSPORT: transport } = process.env;
   const keyWasConfigured = process.env.ADMIN_KEY !== undefined;
-  let adminKey = process.env.ADMIN_KEY ?? randomBytes(32).toString('base64url');
+  let adminKey: string | undefined = process.env.ADMIN_KEY ?? randomBytes(32).toString('base64url');
   delete process.env.ADMIN_KEY;
   const server = createApp({ adminKey, baseUrl, transport, idleMs: idleMinutes * 60_000, voteLimit });
   server.listen(port, '127.0.0.1', () => {
@@ -294,7 +322,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     start();
   } catch (error) {
-    console.error(error.message);
+    console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
 }
