@@ -1,0 +1,32 @@
+{
+  "format": "fakeslido-deck",
+  "version": 1,
+  "questions": [
+    {
+      "questionId": "acceptance-single",
+      "text": "【試用】好きな色は？",
+      "type": "single",
+      "options": ["青", "緑"],
+      "style": "horizontal"
+    },
+    {
+      "questionId": "acceptance-manual",
+      "text": "【試用】次回扱いたいテーマは？",
+      "type": "discussion",
+      "settings": { "moderationMode": "manual", "maxPostsPerToken": 3 }
+    },
+    {
+      "questionId": "acceptance-instant",
+      "text": "【試用】即時公開の動作を確認します",
+      "type": "discussion",
+      "settings": { "moderationMode": "instant", "maxPostsPerToken": 1 }
+    },
+    {
+      "questionId": "acceptance-multiple",
+      "text": "【試用】興味のある分野は？",
+      "type": "multiple",
+      "options": ["データ整理", "共同作業", "発表方法"],
+      "style": "vertical"
+    }
+  ]
+}

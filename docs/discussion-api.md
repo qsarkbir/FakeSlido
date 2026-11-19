@@ -1,6 +1,6 @@
 # コメント API の開発メモ
 
-結合テストは `createApp({ ..., discussionEnabled: true })` でコメント機能を有効にします。通常の `npm start` では、コメント API と質問集の `discussion` 形式は無効です。一般公開は、審査と削除を含む受入テストを実施し、運営者が手動で確認したあとに判断します。
+結合テストは `createApp({ ..., discussionEnabled: true })` でコメント機能を有効にします。手元での確認には `npm run preview:discussion` を使えます（[手動受入手順](discussion-acceptance.md)）。通常の `npm start` では、コメント API と質問集の `discussion` 形式は無効です。一般公開は、審査と削除を含む受入テストを実施し、運営者が手動で確認したあとに判断します。
 
 ## お題の設定
 

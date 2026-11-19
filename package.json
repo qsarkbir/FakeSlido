@@ -8,6 +8,8 @@
   },
   "scripts": {
     "start": "node dist/server.js",
+    "prepreview:discussion": "npm run build",
+    "preview:discussion": "node dist/preview.js",
     "typecheck": "tsc --noEmit",
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc && node scripts/copy-static.mjs",
