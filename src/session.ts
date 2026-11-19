@@ -1,45 +1,56 @@
 import { createHmac, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import type { ServerResponse } from 'node:http';
+import type {
+  AdminState, ControlInput, DeckInput, ErrorResponse, GraphStyle, Presentation,
+  PresentState, PublicQuestion, PublicResults, PublicState, Question, QuestionDefinition,
+  ResultsExport, Role, Tally, VoteInput
+} from './types.js';
 
 export class ApiError extends Error {
-  constructor(status, message, code) {
+  constructor(readonly status: number, message: string, readonly code?: ErrorResponse['code']) {
     super(message);
-    this.status = status;
-    this.code = code;
   }
 }
 
-export function requireValue(condition, message = '入力内容を確認してください。') {
+// 条件に失敗したときは例外になるため、呼び出し元でも成功時の型に絞り込める。
+export function requireValue(condition: unknown, message = '入力内容を確認してください。'): asserts condition {
   if (!condition) throw new ApiError(400, message);
 }
 
-export function objectWith(value, keys) {
+export function objectWith(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
   requireValue(value !== null && typeof value === 'object' && !Array.isArray(value));
   requireValue(Object.keys(value).every(key => keys.includes(key)));
 }
 
 export const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const idPattern = /^[A-Za-z0-9_-]{1,64}$/;
-const randomToken = bytes => randomBytes(bytes).toString('base64url');
-const textFits = (text, limit) =>
+const randomToken = (bytes: number) => randomBytes(bytes).toString('base64url');
+const textFits = (text: unknown, limit: number): text is string =>
   typeof text === 'string' && text.trim().length > 0 && [...text].length <= limit;
 
-function validateQuestion(input) {
+// 配列であることを確認した後も、各要素は個別に検証する。
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function validateQuestion(input: unknown): QuestionDefinition {
   objectWith(input, ['questionId', 'text', 'type', 'options', 'style']);
   const { questionId, text, type, options, style } = input;
   requireValue(questionId === undefined || typeof questionId === 'string' && idPattern.test(questionId));
   requireValue(textFits(text, 200), '質問文は1〜200文字で入力してください。');
   requireValue(type === 'single' || type === 'multiple');
-  requireValue(Array.isArray(options) && options.length >= 2 && options.length <= 8
+  requireValue(isUnknownArray(options) && options.length >= 2 && options.length <= 8
     && options.every(option => textFits(option, 80)), '選択肢は2〜8個、各1〜80文字で入力してください。');
-  const styles = ['horizontal', 'vertical'];
+  const styles: GraphStyle[] = ['horizontal', 'vertical'];
   if (type === 'single' && options.length <= 6) styles.push('donut');
   if (type === 'single' && options.length <= 4) styles.push('stacked');
-  requireValue(styles.includes(style), '選択肢数と質問形式に対応したグラフを選んでください。');
-  return { questionId: questionId ?? randomUUID(), text, type, options, style };
+  const allowedStyle = styles.find(allowed => allowed === style);
+  requireValue(allowedStyle !== undefined, '選択肢数と質問形式に対応したグラフを選んでください。');
+  return { questionId: questionId ?? randomUUID(), text, type, options, style: allowedStyle };
 }
 
-export function aggregate(question) {
+export function aggregate(question: Question): Tally {
   const respondentCount = question.votes.size;
   const counts = question.options.map(() => 0);
   for (const choices of question.votes.values()) {
@@ -57,27 +68,39 @@ export function aggregate(question) {
   };
 }
 
-function publicQuestion(question) {
+// 公開する項目を列挙して、内部データが追加されても公開 API に混ざらないようにする。
+function publicQuestion(question: Question): PublicQuestion {
   const { questionId, text, type, options, style, isOpen, resultsPublished, voteRevision } = question;
   return { questionId, text, type, options, style, isOpen, resultsPublished, voteRevision };
 }
 
-function changedContent(before, after) {
+function changedContent(before: QuestionDefinition, after: QuestionDefinition) {
   return before.text !== after.text || before.type !== after.type
     || before.options.length !== after.options.length
     || before.options.some((option, index) => option !== after.options[index]);
 }
 
 export class PollSession {
-  #sessionKey;
+  // ! はコンストラクターで呼ぶ reset() が、公開前に初期値を入れることを表す。
+  sessionId!: string;
+  participantCode!: string;
+  presentationToken!: string;
+  #sessionKey!: Buffer;
+  #rateKey!: Buffer;
+  private questions!: Map<string, Question>;
+  private presentation!: Presentation;
+  readonly revision: Record<Role, number>;
+  private deckRevision: number;
+  private readonly idleMs: number;
+  private readonly voteLimit: number;
+  private readonly rateTimer: ReturnType<typeof setInterval>;
   #voteRevision = 0;
-  #expiry;
-  #rateKey;
-  #rateCounts = new Map();
+  #expiry?: ReturnType<typeof setTimeout>;
+  #rateCounts = new Map<string, number>();
   #events = new EventEmitter();
   #waiters = 0;
 
-  constructor({ idleMs, voteLimit }) {
+  constructor({ idleMs, voteLimit }: { idleMs: number; voteLimit: number }) {
     this.idleMs = idleMs;
     this.voteLimit = voteLimit;
     const initialRevision = randomInt(2 ** 40);
@@ -119,14 +142,14 @@ export class PollSession {
     this.#expiry = setTimeout(() => this.reset(), this.idleMs).unref();
   }
 
-  #notify(...roles) {
+  #notify(...roles: Role[]) {
     for (const role of roles) {
       this.revision[role]++;
       this.#events.emit(role);
     }
   }
 
-  wait(role, response, timeout) {
+  wait(role: 'admin' | 'present', response: ServerResponse, timeout: number): Promise<void> {
     if (this.#waiters >= 64) {
       throw new ApiError(429, '接続が混み合っています。');
     }
@@ -145,7 +168,7 @@ export class PollSession {
     });
   }
 
-  #rateLimit(ip) {
+  #rateLimit(ip: string) {
     const identifier = createHmac('sha256', this.#rateKey).update(ip).digest('base64url');
     const count = this.#rateCounts.get(identifier) ?? 0;
     if (count >= this.voteLimit || (!count && this.#rateCounts.size >= 10_000)) {
@@ -154,13 +177,21 @@ export class PollSession {
     this.#rateCounts.set(identifier, count + 1);
   }
 
-  state(role) {
+  #presentationQuestion() {
+    const { questionId } = this.presentation;
+    return questionId === null ? undefined : this.questions.get(questionId);
+  }
+
+  state(role: Role): AdminState | PublicState | PresentState {
     const base = { revision: this.revision[role], sessionId: this.sessionId };
     if (role === 'public') {
-      return { ...base, questions: [...this.questions.values()].filter(q => q.everOpened).map(publicQuestion) };
+      return {
+        ...base,
+        questions: [...this.questions.values()].filter(q => q.everOpened).map(publicQuestion)
+      } satisfies PublicState;
     }
     if (role === 'present') {
-      const question = this.questions.get(this.presentation.questionId);
+      const question = this.#presentationQuestion();
       const visible = question?.everOpened ? question : null;
       const tallyVisible = this.presentation.mode === 'results' && visible?.resultsPublished;
       return {
@@ -172,7 +203,7 @@ export class PollSession {
           respondentCount: visible.votes.size,
           ...(tallyVisible && { results: aggregate(visible) })
         } : null
-      };
+      } satisfies PresentState;
     }
     return {
       ...base,
@@ -183,57 +214,60 @@ export class PollSession {
       questions: [...this.questions.values()].map(question => ({
         ...publicQuestion(question), everOpened: question.everOpened, results: aggregate(question)
       }))
-    };
+    } satisfies AdminState;
   }
 
-  question(id) {
+  question(id: unknown): Question {
     requireValue(typeof id === 'string' && idPattern.test(id));
     const question = this.questions.get(id);
     if (!question) throw new ApiError(404, '質問が見つかりません。');
     return question;
   }
 
-  results(id) {
+  results(id: unknown): PublicResults {
     requireValue(typeof id === 'string' && idPattern.test(id));
     const question = this.questions.get(id);
     if (!question?.resultsPublished) throw new ApiError(404, '公開済みの結果がありません。');
     return { sessionId: this.sessionId, question: publicQuestion(question), ...aggregate(question) };
   }
 
-  vote(input, ip) {
+  vote(input: unknown, ip: string): number {
     this.#rateLimit(ip);
-    objectWith(input, ['questionId', 'voterToken', 'choices', 'voteRevision']);
-    requireValue(typeof input.voterToken === 'string' && tokenPattern.test(input.voterToken));
-    requireValue(Number.isSafeInteger(input.voteRevision) && input.voteRevision > 0);
+    objectWith(input, ['questionId', 'voterToken', 'choices', 'voteRevision'] satisfies (keyof VoteInput)[]);
+    const { voterToken, voteRevision } = input;
+    requireValue(typeof voterToken === 'string' && tokenPattern.test(voterToken));
+    requireValue(typeof voteRevision === 'number' && Number.isSafeInteger(voteRevision) && voteRevision > 0);
     const question = this.question(input.questionId);
     if (!question.isOpen) throw new ApiError(409, 'この質問の受付は終了しています。');
-    if (question.voteRevision !== input.voteRevision) {
+    if (question.voteRevision !== voteRevision) {
       throw new ApiError(409, '質問が更新されました。もう一度選択してください。');
     }
     const choices = question.type === 'single' ? [input.choices] : input.choices;
-    requireValue(Array.isArray(choices) && choices.length >= 1 && choices.length <= question.options.length
+    requireValue(isUnknownArray(choices) && choices.length >= 1 && choices.length <= question.options.length
       && new Set(choices).size === choices.length
-      && choices.every(choice => Number.isInteger(choice) && choice >= 1 && choice <= question.options.length),
+      && choices.every((choice): choice is number => typeof choice === 'number'
+        && Number.isInteger(choice) && choice >= 1 && choice <= question.options.length),
     '有効な選択肢を指定してください。');
     const pseudonym = createHmac('sha256', this.#sessionKey)
-      .update(input.voterToken).update(question.questionId).digest('base64url');
+      .update(voterToken).update(question.questionId).digest('base64url');
     const oldChoices = question.votes.get(pseudonym);
     if (!oldChoices && question.votes.size >= 5000) throw new ApiError(409, '回答者数の上限に達しました。');
     choices.sort((a, b) => a - b);
     if (oldChoices?.length === choices.length && oldChoices.every((choice, index) => choice === choices[index])) {
-      return;
+      return voteRevision;
     }
     question.votes.set(pseudonym, choices);
-    const roles = ['admin'];
+    const roles: Role[] = ['admin'];
     if (question.resultsPublished) roles.push('public');
     if (this.presentation.questionId === question.questionId
       && (!oldChoices || this.presentation.mode === 'results')) roles.push('present');
     this.#notify(...roles);
+    return voteRevision;
   }
 
-  saveDeck(input) {
-    objectWith(input, ['questions', 'deckRevision', 'replace', 'confirmReset']);
-    requireValue(Array.isArray(input.questions) && input.questions.length <= 50, '質問は50問までです。');
+  saveDeck(input: unknown) {
+    objectWith(input, ['questions', 'deckRevision', 'replace', 'confirmReset'] satisfies (keyof DeckInput)[]);
+    requireValue(isUnknownArray(input.questions) && input.questions.length <= 50, '質問は50問までです。');
     requireValue(input.replace === undefined || typeof input.replace === 'boolean');
     requireValue(input.confirmReset === undefined || typeof input.confirmReset === 'boolean');
     requireValue(Number.isSafeInteger(input.deckRevision));
@@ -263,7 +297,7 @@ export class PollSession {
         votes: reset ? new Map() : previous.votes
       }];
     }));
-    if (input.replace || !this.questions.has(this.presentation.questionId)) {
+    if (input.replace || !this.#presentationQuestion()) {
       this.presentation = { questionId: null, mode: 'question' };
     }
     this.deckRevision++;
@@ -271,8 +305,8 @@ export class PollSession {
     this.#notify('admin', 'public', 'present');
   }
 
-  control(input) {
-    objectWith(input, ['action', 'questionId', 'confirm']);
+  control(input: unknown) {
+    objectWith(input, ['action', 'questionId', 'confirm'] satisfies (keyof ControlInput)[]);
     const { action, questionId, confirm } = input;
     requireValue(confirm === undefined || typeof confirm === 'boolean');
     if (action === 'erase') {
@@ -282,7 +316,7 @@ export class PollSession {
     }
     if (action === 'show-results' || action === 'show-question') {
       requireValue(questionId === undefined);
-      const question = this.questions.get(this.presentation.questionId);
+      const question = this.#presentationQuestion();
       if (action === 'show-results') {
         requireValue(question?.everOpened, '発表する質問を一度オープンしてください。');
         question.resultsPublished = true;
@@ -295,7 +329,7 @@ export class PollSession {
     this.#notify('admin', 'public', 'present');
   }
 
-  #controlQuestion(action, question, confirm) {
+  #controlQuestion(action: unknown, question: Question, confirm: boolean | undefined) {
     const selected = this.presentation.questionId === question.questionId;
     switch (action) {
       case 'open':
@@ -327,7 +361,7 @@ export class PollSession {
     }
   }
 
-  exportResults() {
+  exportResults(): ResultsExport {
     this.touch();
     return {
       format: 'fakeslido-results',

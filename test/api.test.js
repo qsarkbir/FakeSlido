@@ -257,6 +257,28 @@ test('権限、オリジン、型、本文サイズとレートを制限する',
   assert.ok(limited.headers.has('retry-after'));
 });
 
+test('JSON の型が違う入力を拒否し、質問集と票を変更しない', async () => {
+  const { call, control, deck, state, vote } = await fixture();
+  const before = await state();
+  for (const data of [null, [], true, { questions: [{ ...first, options: ['青', 2] }], deckRevision: before.deckRevision }]) {
+    assert.equal((await call('/api/admin/deck', { method: 'PUT', data })).status, 400);
+  }
+  assert.equal((await call('/api/admin/control', { method: 'POST', data: { action: 'erase', confirm: 'true' } })).status, 400);
+  assert.deepEqual(await state(), before);
+
+  const { body: created } = await deck([first]);
+  const token = created.participantCode;
+  const revision = created.questions[0].voteRevision;
+  await control('open', 'one');
+  assert.equal((await vote(token, 'one', 1, String(revision))).status, 400);
+  assert.equal((await vote(token, 'one', '1', revision)).status, 400);
+  assert.equal((await vote(token, 'one', 1, revision, {})).status, 400);
+  assert.equal((await state()).questions[0].results.respondentCount, 0);
+  const accepted = await vote(token, 'one', 1, revision);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(accepted.body, { sessionId: created.sessionId, voteRevision: revision });
+});
+
 test('静的ファイルを固定リストから提供し、QRコードの版とハッシュを固定する', async () => {
   const { call } = await fixture();
   for (const [path, entry] of [['/', 'participate'], ['/admin', 'admin'], ['/present', 'present']]) {
