@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { ApiError, idPattern, objectWith, requireValue, textFits } from './validation.js';
 import type {
-  AdminComment, CommentReceipt, DiscussionDefinition, DiscussionSettings, LikeReceipt, PublicComment
+  AdminComment, CommentControlInput, CommentReceipt, DiscussionDefinition, DiscussionSettings, LikeReceipt, PublicComment
 } from './types.js';
 
 export const commentsPerTopic = 200;
@@ -117,5 +117,23 @@ export class Discussion {
   adminComments(): AdminComment[] {
     return [...this.#comments.values()].map(({ commentId, body, visibility, presented, likes }) =>
       ({ commentId, body, visibility, presented, likes: likes.size }));
+  }
+
+  control(input: CommentControlInput) {
+    const comment = this.#comments.get(input.commentId);
+    if (!comment) throw new ApiError(404, 'コメントが見つかりません。');
+    // 別の運営タブで非公開にした投稿を、古い承認操作で再公開しない。
+    if (comment.visibility !== input.expectedVisibility) {
+      throw new ApiError(409, '公開状態が更新されました。一覧を確認してください。');
+    }
+    const wasPublic = comment.visibility === 'published';
+    if (input.action === 'delete') {
+      this.#likeCount -= comment.likes.size;
+      // 削除はフラグではなく、本文・仮名・いいねを持つ実体への参照を破棄する。
+      this.#comments.delete(comment.commentId);
+    } else {
+      comment.visibility = input.action === 'publish' ? 'published' : 'hidden';
+    }
+    return wasPublic || input.action === 'publish';
   }
 }

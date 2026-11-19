@@ -494,7 +494,7 @@ test('静的ファイルを固定リストから提供し、QRコードの版と
     assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
   }
   const javascript = [
-    '/participate.js', '/participant-discussion.js', '/admin.js', '/present.js',
+    '/participate.js', '/participant-discussion.js', '/admin.js', '/admin-deck.js', '/present.js',
     '/common.js', '/charts.js', '/preflight.js', '/qr.js'
   ];
   const assets = [
@@ -583,6 +583,7 @@ test('通常起動ではコメント API とコメント形式を使用できな
     token: before.participantCode, method: 'POST', data: {}
   })).status, 404);
   assert.equal((await call('/api/admin/comments?questionId=manual')).status, 404);
+  assert.equal((await call('/api/admin/comments/control', { method: 'POST', data: {} })).status, 404);
   assert.equal((await call('/api/public/likes', { token: before.participantCode, method: 'POST', data: {} })).status, 404);
   assert.equal((await state()).deckRevision, before.deckRevision);
 });
@@ -835,4 +836,100 @@ test('一人・お題・セッションの投稿上限を適用する', async ()
   assert.equal((await send(topics[0].questionId, 0)).status, 200);
   await control('open', topics[5].questionId);
   assert.equal((await send(topics[5].questionId, 0)).status, 409);
+});
+
+test('運営の承認・非公開・再公開・削除は公開一覧を更新し、停止後も審査できる', async () => {
+  const { call, deck, control, post, like, comments, adminComments, requestData, state } = await discussionFixture();
+  const snapshot = (await deck([manualTopic])).body;
+  await control('open', 'manual');
+  const base = requestData(snapshot, 'manual', newKey());
+  const receipt = (await post(snapshot, { ...base, clientSubmissionId: 'moderated', body: '<b>検証用本文</b>' })).body;
+  const update = (action, expectedVisibility, extra = {}) => call('/api/admin/comments/control', {
+    method: 'POST', data: { sessionId: base.sessionId, questionId: base.questionId,
+      discussionRevision: base.discussionRevision, commentId: receipt.commentId, action, expectedVisibility, ...extra }
+  });
+  const initial = (await comments(snapshot.participantCode, 'manual')).body;
+  assert.equal(initial.comments.length, 0);
+  assert.equal((await update('publish', 'pending')).status, 200);
+  const published = (await comments(snapshot.participantCode, 'manual')).body;
+  assert.ok(published.revision > initial.revision);
+  assert.equal(published.comments[0].body, '<b>検証用本文</b>');
+  assert.equal((await like(snapshot, { ...base, voterToken: newKey(), commentId: receipt.commentId, liked: true })).status, 200);
+  assert.equal((await adminComments('manual')).body.comments[0].likes, 1);
+  await control('close', 'manual');
+  assert.equal((await post(snapshot, { ...base, clientSubmissionId: 'after-close', body: '停止後' })).status, 409);
+  assert.equal((await like(snapshot, { ...base, voterToken: newKey(), commentId: receipt.commentId, liked: true })).status, 409);
+  assert.equal((await update('hide', 'published')).status, 200);
+  const hidden = (await comments(snapshot.participantCode, 'manual')).body;
+  assert.equal(hidden.comments.length, 0);
+  assert.ok(hidden.revision > published.revision);
+  assert.equal((await update('publish', 'pending')).status, 409);
+  assert.equal((await update('publish', 'hidden')).status, 200);
+  assert.equal((await comments(snapshot.participantCode, 'manual')).body.comments[0].likes, 1);
+  assert.equal((await update('delete', 'published')).status, 400);
+  assert.equal((await update('delete', 'published', { confirm: true })).status, 200);
+  assert.equal((await comments(snapshot.participantCode, 'manual')).body.comments.length, 0);
+  assert.equal((await adminComments('manual')).body.comments.length, 0);
+  assert.equal((await state()).discussions[0].commentCount, 0);
+  assert.equal((await update('publish', 'published')).status, 404);
+  assert.equal((await call('/api/present/state', { token: snapshot.presentationToken })).raw.includes(Buffer.from('検証用本文')), false);
+});
+
+test('コメント管理は管理認証・同一オリジン・セッションとお題の一致・入力検証を要求する', async () => {
+  const { call, deck, control, post, requestData, adminComments, erase } = await discussionFixture();
+  const snapshot = (await deck([manualTopic, instantTopic])).body;
+  await control('open', 'manual');
+  const base = requestData(snapshot, 'manual', newKey());
+  const receipt = (await post(snapshot, { ...base, clientSubmissionId: 'secure', body: '権限テスト用' })).body;
+  const data = { sessionId: base.sessionId, questionId: 'manual', discussionRevision: base.discussionRevision,
+    commentId: receipt.commentId, action: 'publish', expectedVisibility: 'pending' };
+  const update = (patch = {}, options = {}) => call('/api/admin/comments/control', {
+    method: 'POST', data: { ...data, ...patch }, ...options
+  });
+  for (const token of [snapshot.participantCode, snapshot.presentationToken, null]) {
+    assert.equal((await update({}, { token })).status, 401);
+  }
+  assert.equal((await update({}, { headers: { Origin: 'https://invalid.example' } })).status, 403);
+  for (const patch of [{ action: 'present' }, { expectedVisibility: 'private' }, { confirm: 'true' },
+    { discussionRevision: '1' }, { commentId: '' }, { sessionId: null }, { extra: true }]) {
+    assert.equal((await update(patch)).status, 400);
+  }
+  assert.equal((await update({ sessionId: 'stale' })).status, 409);
+  assert.equal((await update({ discussionRevision: base.discussionRevision + 1 })).status, 409);
+  assert.equal((await update({ questionId: 'instant', discussionRevision: snapshot.discussions[1].discussionRevision })).status, 404);
+  assert.equal((await adminComments('manual')).body.comments[0].visibility, 'pending');
+  await deck([{ ...manualTopic, text: '更新したお題' }, instantTopic]);
+  assert.equal((await update()).status, 409);
+  await erase(snapshot.sessionId);
+  assert.equal((await update()).status, 409);
+});
+
+test('非公開の審査と削除では公開一覧のリビジョンを進めない', async () => {
+  const { call, deck, control, post, requestData, comments } = await discussionFixture();
+  const snapshot = (await deck([manualTopic])).body;
+  await control('open', 'manual');
+  const base = requestData(snapshot, 'manual', newKey());
+  const receipt = (await post(snapshot, { ...base, clientSubmissionId: 'private', body: '審査用' })).body;
+  const before = (await comments(snapshot.participantCode, 'manual')).body;
+  for (const [action, expectedVisibility] of [['hide', 'pending'], ['delete', 'hidden']]) {
+    assert.equal((await call('/api/admin/comments/control', { method: 'POST', data: {
+      sessionId: base.sessionId, questionId: 'manual', discussionRevision: base.discussionRevision,
+      commentId: receipt.commentId, action, expectedVisibility, confirm: true
+    } })).status, 200);
+    assert.equal((await call('/api/public/comments?questionId=manual&revision=' + before.revision,
+      { token: snapshot.participantCode })).status, 204);
+  }
+});
+
+test('混在する質問集の編集用データは順序と設定だけを保ち、コメントや結果を含まない', async () => {
+  const { orderedItems, draft } = await import('../dist/public/admin-deck.js');
+  const { deck, state } = await discussionFixture();
+  await deck([manualTopic, first, instantTopic, second]);
+  const snapshot = await state();
+  const drafts = orderedItems(snapshot).map(draft);
+  assert.deepEqual(drafts.map(item => item.questionId), ['manual', 'one', 'instant', 'two']);
+  assert.deepEqual(drafts[0], { ...manualTopic, settings: { moderationMode: 'manual', maxPostsPerToken: 3 } });
+  assert.deepEqual(drafts[1], first);
+  assert.equal((await deck(drafts)).status, 200);
+  assert.deepEqual(orderedItems(await state()).map(item => item.questionId), drafts.map(item => item.questionId));
 });

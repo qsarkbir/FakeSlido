@@ -1,4 +1,4 @@
-import type { AdminState, CommentReceipt, ControlInput, DeckInput, GraphStyle, LikeReceipt, PostCommentInput,
+import type { AdminComments, AdminState, CommentControlInput, CommentReceipt, ControlInput, DeckInput, GraphStyle, LikeReceipt, PostCommentInput,
   PreflightStatus, PresentState, PublicComments, PublicResults, PublicState, SetLikeInput, VoteInput, VoteReceipt
 } from '../types.js';
 
@@ -129,6 +129,7 @@ async function fetchResponse(path: string, token: Credential, { method = 'GET', 
 }
 
 interface Mutations {
+  '/api/admin/comments/control': { options: { method: 'POST'; data: CommentControlInput }; response: AdminState };
   '/api/admin/control': { options: { method: 'POST'; data: ControlInput }; response: AdminState };
   '/api/admin/deck': { options: { method: 'PUT'; data: Omit<DeckInput, 'questions'> & { questions: unknown[] } };
     response: AdminState };
@@ -146,6 +147,7 @@ export function request<Path extends keyof Mutations>(
 ): Promise<Mutations[Path]['response']>;
 export function request(path: `/api/public/results?questionId=${string}`, token: Credential): Promise<PublicResults>;
 export function request(path: '/api/admin/preflight', token: Credential): Promise<PreflightStatus>;
+export function request(path: `/api/admin/comments?questionId=${string}`, token: Credential): Promise<AdminComments>;
 export function request(path: '/api/public/state', token: Credential): Promise<PublicState>;
 export function request(
   path: `/api/public/comments?questionId=${string}`, token: Credential, options: { voterToken: string }
