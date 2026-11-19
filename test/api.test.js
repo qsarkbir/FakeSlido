@@ -56,7 +56,7 @@ async function fixture(options = {}) {
   const vote = (token, questionId, choices, voteRevision, voterToken = newKey()) => call('/api/public/vote', {
     token, method: 'POST', data: { questionId, voterToken, choices, voteRevision }
   });
-  return { key, state, deck, control, erase, call, vote };
+  return { origin, key, state, deck, control, erase, call, vote };
 }
 
 test('公開状態、受付状態、発表モードが独立し、未オープンの質問を返さない', async () => {
@@ -232,14 +232,36 @@ test('以前のセッションの確認では現在のセッションを消去�
   assert.equal((await state()).sessionId, current.sessionId);
 });
 
-test('管理の自動取得では有効期限を延長しない', async () => {
+test('管理の自動取得と本番前チェックでは有効期限を延長しない', async () => {
   const { call, state } = await fixture({ idleMs: 150 });
   const before = await state();
   await sleep(85);
   assert.equal((await state()).sessionId, before.sessionId);
+  assert.equal((await call('/api/admin/preflight')).status, 200);
   await sleep(100);
   assert.notEqual((await state()).sessionId, before.sessionId);
   assert.equal((await call('/api/public/state', { token: before.participantCode })).status, 410);
+});
+
+test('本番前チェックは運営認証で現在の接続情報を取得する', async () => {
+  const { origin, call, state } = await fixture();
+  const before = await state();
+  const path = '/api/admin/preflight';
+  for (const token of [null, before.participantCode, before.presentationToken]) {
+    assert.equal((await call(path, { token })).status, 401);
+  }
+  const result = await call(path);
+  assert.equal(result.status, 200);
+  assert.equal(result.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(result.body, {
+    origin, transport: 'local', sessionId: before.sessionId,
+    participantCode: before.participantCode, presentationToken: before.presentationToken
+  });
+  assert.equal((await call(path + '?test=true')).status, 400);
+  assert.equal((await call(path, { method: 'POST' })).status, 405);
+  assert.equal((await call('/api/present/state', { token: result.body.presentationToken })).body.sessionId,
+    before.sessionId);
+  assert.deepEqual(await state(), before);
 });
 
 test('新しいプロセス相当のサーバーには旧セッションの票と鍵を渡さない', async () => {
@@ -315,7 +337,7 @@ test('静的ファイルを固定リストから提供し、QRコードの版と
     assert.match(page.headers.get('content-security-policy'), /default-src 'none'.*frame-ancestors 'none'/);
     assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
   }
-  const javascript = ['/participate.js', '/admin.js', '/present.js', '/common.js', '/charts.js'];
+  const javascript = ['/participate.js', '/admin.js', '/present.js', '/common.js', '/charts.js', '/preflight.js', '/qr.js'];
   const assets = [
     ...javascript.map(path => [path, 'text/javascript; charset=utf-8']),
     ['/styles.css', 'text/css; charset=utf-8'],
@@ -345,6 +367,11 @@ test('HTTPS公開モードでは公開オリジンと短期の接続元別制限
   assert.equal(admin.status, 200);
   assert.equal(admin.headers.get('strict-transport-security'), 'max-age=31536000');
   assert.equal((await call('/api/admin/state', { token: key })).status, 421);
+  const preflight = await call('/api/admin/preflight', { headers: forwarded });
+  assert.equal(preflight.status, 200);
+  assert.equal(preflight.body.origin, baseUrl);
+  assert.equal(preflight.body.transport, 'cloudflare');
+  assert.equal((await call('/api/admin/preflight')).status, 421);
 
   const deck = await call('/api/admin/deck', {
     method: 'PUT', headers: forwarded, data: { questions: [first], deckRevision: admin.body.deckRevision }
