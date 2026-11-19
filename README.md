@@ -4,13 +4,17 @@
 
 ## 起動
 
-Node.js 24 を用意し、GitHub からリポジトリを取得して起動します。
+Node.js 24 を用意し、GitHub からリポジトリを取得してビルドします。
 
 ```sh
 git clone https://github.com/qsarkbir/PochiPoll.git
 cd PochiPoll
+npm ci
+npm run build
 npm start
 ```
+
+PowerShell で npm の実行が制限されている場合は、`npm` を `npm.cmd` に置き換えてください。ソースを更新したら、起動前にもう一度 `npm run build` を実行します。
 
 起動時にターミナルに表示される運営用URLを、同じマシンのブラウザで開きます。初期の待受は `127.0.0.1:3000` です。
 
@@ -36,6 +40,8 @@ npm start
 ## Cloudflare Quick Tunnel での試用
 
 PochiPoll と `cloudflared` を同じOS環境で実行します。両方を Windows 側で起動するか、両方を WSL 内で起動してください。同じポートでローカル試用中のアプリがあれば、必要な集計を書き出してから停止します。
+
+初回とソース更新時は、上記の手順で `npm ci` と `npm run build` を済ませてください。
 
 1. ターミナル1で `cloudflared tunnel --url http://127.0.0.1:3000` を実行します。表示された `https://…trycloudflare.com` を控え、このターミナルを開いたままにします。
 2. ターミナル2で、`package.json` がある PochiPoll のディレクトリから以下を実行します。例示の URL は手順1で発行された URL に置き換えます。
@@ -73,12 +79,21 @@ PochiPoll と `cloudflared` を同じOS環境で実行します。両方を Wind
 - 運営者のブラウザに質問集の控えを保存します。サーバーの全消去や再起動後に、運営画面で質問集を復元できます。質問集 JSON は `fakeslido-deck.json` という名前で保存され、運営画面の「質問集を読み込む」から再利用できます。復元時の質問は未オープン・結果非公開です。
 - 別のブラウザから同じ人が再投票できるため、本人確認が必要な投票には適しません。
 
-## 検証
+## 開発と検証
+
+アプリのソースは `src/` にあり、ブラウザ用のモジュールは `src/public/` にあります。TypeScript コンパイラはこの構成を保って `dist/` に JavaScript を出力します。HTML・CSS・SVG・QR コードライブラリは `public/` から `dist/public/` にコピーします。`npm start` はこの生成物を使います。
+
+移行中は既存の JavaScript と新しい TypeScript が混在できます。`strict` は TypeScript の型を厳密に検査します。`allowJs` は既存の JavaScript をビルド対象に含め、`checkJs: false` は既存の JavaScript の型検査を後続作業に委ねます。ES モジュールの相対 import は、TypeScript ファイルからでも実行時に解決される拡張子 `.js` を指定します。
 
 ```sh
+npm ci
+npm run typecheck
+npm run build
 npm test
 npm run test:load
 ```
+
+`npm test` と `npm run test:load` はそれぞれ最初にビルドし、その生成物を検証します。`dist/` はビルド時に作り直されます。
 
 負荷試験はループバック上で独立したサーバーを起動し、200件の同時投票とその公開結果の取得を計測します。Quick Tunnel などの実際の公開経路での性能は、同等の利用条件で別途計測してください。
 

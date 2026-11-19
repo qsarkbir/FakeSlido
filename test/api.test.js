@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createApp } from '../server.js';
+import { createApp } from '../dist/server.js';
 
 const newKey = () => randomBytes(32).toString('base64url');
 const first = { questionId: 'one', text: '好きな色は？', type: 'single', options: ['青', '緑'], style: 'horizontal' };
@@ -259,14 +259,32 @@ test('権限、オリジン、型、本文サイズとレートを制限する',
 
 test('静的ファイルを固定リストから提供し、QRコードの版とハッシュを固定する', async () => {
   const { call } = await fixture();
-  const asset = await call('/admin');
-  assert.equal(asset.status, 200);
-  assert.match(asset.headers.get('content-security-policy'), /default-src 'none'.*frame-ancestors 'none'/);
-  assert.equal(asset.headers.get('referrer-policy'), 'no-referrer');
+  for (const [path, entry] of [['/', 'participate'], ['/admin', 'admin'], ['/present', 'present']]) {
+    const page = await call(path);
+    assert.equal(page.status, 200, path);
+    assert.ok(page.raw.toString().includes(`type="module" src="/${entry}.js"`), path);
+    assert.match(page.headers.get('content-security-policy'), /default-src 'none'.*frame-ancestors 'none'/);
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+  }
+  const javascript = ['/participate.js', '/admin.js', '/present.js', '/common.js', '/charts.js'];
+  const assets = [
+    ...javascript.map(path => [path, 'text/javascript; charset=utf-8']),
+    ['/styles.css', 'text/css; charset=utf-8'],
+    ['/mark.svg', 'image/svg+xml']
+  ];
+  for (const [path, contentType] of assets) {
+    const asset = await call(path);
+    assert.equal(asset.status, 200, path);
+    assert.equal(asset.headers.get('content-type'), contentType, path);
+    assert.ok(asset.raw.length > 0, path);
+  }
   assert.equal((await call('/server.js')).status, 404);
   assert.equal((await call('/vendor/..%2F..%2Fserver.js')).status, 404);
   const source = await readFile(new URL('../public/vendor/qrcode.js', import.meta.url));
-  assert.equal(createHash('sha256').update(source).digest('hex'),
+  const qr = await call('/vendor/qrcode.js');
+  assert.equal(qr.status, 200);
+  assert.deepEqual(qr.raw, source);
+  assert.equal(createHash('sha256').update(qr.raw).digest('hex'),
     '79ec86f82856005b1c887905cfccfcfbec3821ca61c7fd5a952faa5f778f791c');
 });
 

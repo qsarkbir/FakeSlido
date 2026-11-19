@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { createApp } from '../server.js';
+import { createApp } from '../dist/server.js';
 
 const count = 200;
 const adminKey = randomBytes(32).toString('base64url');

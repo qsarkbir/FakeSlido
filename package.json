@@ -3,10 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "start": "node server.js",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc && node scripts/copy-static.mjs",
+    "pretest": "npm run build",
     "test": "node --test test/*.test.js",
+    "pretest:load": "npm run build",
     "test:load": "node test/load.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
   }
 }
