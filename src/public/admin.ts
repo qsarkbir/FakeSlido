@@ -33,6 +33,10 @@ const eraseDownloads = { csv: $('erase-csv', HTMLButtonElement), json: $('erase-
 let eraseTarget: string | null = null;
 let erasePending: 'erase' | 'export' | undefined;
 const updatePreflight = setupPreflight(key, () => state);
+const extendExpiry = $('extend-expiry', HTMLButtonElement);
+const expiryRemaining = $('expiry-remaining');
+const expiryWarning = $('expiry-warning');
+let expiryDeadline: number | undefined;
 
 // 編集用のオブジェクトには回答数や公開状態を含めない。質問集 JSON の項目を保つ。
 function draft(question: QuestionDefinition): QuestionDefinition {
@@ -56,6 +60,9 @@ function applyState(next: AdminState) {
   if (state && !sameSession) previousSessionId = state.sessionId;
   const newDeck = next.deckRevision !== state?.deckRevision;
   state = next;
+  // サーバー側の時刻差を、端末の時計変更の影響を受けない経過時間に換算する。
+  expiryDeadline = performance.now() + (next.expiresAt - next.serverTime);
+  renderExpiry();
   if (!state.questions.some(question => question.questionId === selectedId)) {
     selectedId = state.questions[0]?.questionId;
   }
@@ -195,6 +202,32 @@ function control(data: ControlInput) {
     }));
   });
 }
+
+function renderExpiry() {
+  if (expiryDeadline === undefined) return;
+  const seconds = Math.max(0, Math.ceil((expiryDeadline - performance.now()) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  expiryRemaining.textContent = 'あと ' + (hours ? hours + '時間' : '') + minutes + '分' + seconds % 60 + '秒';
+  const warning = seconds === 0 ? '自動消去の予定時刻を過ぎました。セッションの更新を待っています。'
+    : seconds <= 5 * 60 ? '自動消去まで5分以内です。必要なら有効期限を延長してください。'
+      : seconds <= 30 * 60 ? '自動消去まで30分以内です。' : '';
+  if (expiryWarning.textContent !== warning) message(warning, expiryWarning);
+  expiryWarning.classList.toggle('urgent', seconds <= 5 * 60);
+}
+
+setInterval(renderExpiry, 1000);
+extendExpiry.addEventListener('click', async () => {
+  if (!state || busy) return;
+  extendExpiry.disabled = true;
+  try {
+    if (await control({ action: 'extend-expiry', sessionId: state.sessionId })) {
+      message('有効期限を延長しました。');
+    }
+  } finally {
+    extendExpiry.disabled = false;
+  }
+});
 
 interface SaveOptions {
   replace?: boolean;
@@ -435,5 +468,6 @@ poll('/api/admin/state', key, { interval: 0, onState: applyState, onConnection: 
   copyLink.disabled = true;
   openPresent.disabled = true;
   eraseDialog.close();
+  expiryDeadline = undefined;
   message(text);
 } });

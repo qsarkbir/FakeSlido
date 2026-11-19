@@ -28,6 +28,17 @@
     </section>
     <p id="notice" class="notice" role="status" hidden></p>
     <div id="workspace" hidden>
+      <section id="session-expiry" class="panel session-expiry" aria-labelledby="expiry-title">
+        <div class="session-expiry-header">
+          <div>
+            <h2 id="expiry-title">自動消去までの残り時間</h2>
+            <p id="expiry-remaining"></p>
+          </div>
+          <button type="button" id="extend-expiry">有効期限を延長</button>
+        </div>
+        <p id="expiry-warning" class="expiry-warning" role="status" hidden></p>
+        <p class="muted">残り時間はサーバーから取得した推定値です。延長してもプロセスの停止や通信の切断は防げません。</p>
+      </section>
       <section id="overview" class="overview" aria-label="セッション概要"></section>
       <div class="workspace">
         <section class="panel question-list">

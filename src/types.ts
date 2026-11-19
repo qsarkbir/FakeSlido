@@ -63,6 +63,7 @@ export interface DeckInput {
 
 export type ControlInput =
   | { action: 'erase'; questionId?: never; confirm: true; sessionId: string }
+  | { action: 'extend-expiry'; questionId?: never; confirm?: never; sessionId: string }
   | { action: 'show-results' | 'show-question'; questionId?: never; confirm?: boolean }
   | { action: 'open' | 'select' | 'close' | 'publish' | 'unpublish'; questionId: string; confirm?: boolean }
   | { action: 'reset-votes'; questionId: string; confirm: true };
@@ -83,6 +84,8 @@ export interface PresentState extends StateBase {
 }
 
 export interface AdminState extends StateBase {
+  expiresAt: number;
+  serverTime: number;
   deckRevision: number;
   participantCode: string;
   presentationToken: string;

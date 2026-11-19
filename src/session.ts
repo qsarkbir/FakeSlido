@@ -96,6 +96,7 @@ export class PollSession {
   private readonly rateTimer: ReturnType<typeof setInterval>;
   #voteRevision = 0;
   #expiry?: ReturnType<typeof setTimeout>;
+  #expiresAt = 0;
   #rateCounts = new Map<string, number>();
   #events = new EventEmitter();
   #waiters = 0;
@@ -139,6 +140,7 @@ export class PollSession {
 
   touch() {
     clearTimeout(this.#expiry);
+    this.#expiresAt = Date.now() + this.idleMs;
     this.#expiry = setTimeout(() => this.reset(), this.idleMs).unref();
   }
 
@@ -207,6 +209,8 @@ export class PollSession {
     }
     return {
       ...base,
+      expiresAt: this.#expiresAt,
+      serverTime: Date.now(),
       deckRevision: this.deckRevision,
       participantCode: this.participantCode,
       presentationToken: this.presentationToken,
@@ -321,6 +325,14 @@ export class PollSession {
       this.reset();
       return;
     }
+    if (action === 'extend-expiry') {
+      requireValue(questionId === undefined && confirm === undefined);
+      requireValue(typeof sessionId === 'string' && sessionId.length > 0);
+      this.requireSession(sessionId);
+      this.touch();
+      this.#notify('admin');
+      return;
+    }
     requireValue(sessionId === undefined);
     if (action === 'show-results' || action === 'show-question') {
       requireValue(questionId === undefined);
@@ -371,6 +383,7 @@ export class PollSession {
 
   exportResults(): ResultsExport {
     this.touch();
+    this.#notify('admin');
     return {
       format: 'fakeslido-results',
       version: 1,

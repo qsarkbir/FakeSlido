@@ -82,6 +82,13 @@ button.icon { width: 42px; font-size: 1.4rem; padding: 0; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 1.5rem; }
 .page-heading p { margin-top: .35rem; }
 .notice { margin: 0 0 1rem; border: 1px solid #d6d2f7; background: #efedff; padding: .65rem .85rem; border-radius: 9px; color: #352b8b; }
+.session-expiry { display: grid; gap: .4rem; padding: .8rem 1rem; margin-bottom: 1.1rem; }
+.session-expiry-header { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.session-expiry h2 { font-size: 1rem; }
+.session-expiry p { font-size: .85rem; }
+#expiry-remaining { font-variant-numeric: tabular-nums; }
+.expiry-warning { border-radius: 8px; padding: .45rem .65rem; background: #fff3d8; color: #674b11; }
+.expiry-warning.urgent { background: #fbe9ee; color: #a72d4c; }
 .overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1.1rem; }
 .metric, .panel { border: 1px solid var(--line); border-radius: 15px; background: var(--white); box-shadow: 0 4px 14px #1b2b4310; }
 .metric { display: flex; flex-direction: column; gap: .1rem; padding: .85rem 1.1rem; }
