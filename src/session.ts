@@ -242,9 +242,9 @@ export class PollSession {
     requireValue(typeof voterToken === 'string' && tokenPattern.test(voterToken));
     requireValue(typeof voteRevision === 'number' && Number.isSafeInteger(voteRevision) && voteRevision > 0);
     const question = this.question(input.questionId);
-    if (!question.isOpen) throw new ApiError(409, 'この質問の受付は終了しています。');
+    if (!question.isOpen) throw new ApiError(409, 'この質問の受付は終了しています。', 'vote_closed');
     if (question.voteRevision !== voteRevision) {
-      throw new ApiError(409, '質問が更新されました。もう一度選択してください。');
+      throw new ApiError(409, '質問が更新されました。もう一度選択してください。', 'vote_changed');
     }
     const choices = question.type === 'single' ? [input.choices] : input.choices;
     requireValue(isUnknownArray(choices) && choices.length >= 1 && choices.length <= question.options.length
@@ -255,7 +255,7 @@ export class PollSession {
     const pseudonym = createHmac('sha256', this.#sessionKey)
       .update(voterToken).update(question.questionId).digest('base64url');
     const oldChoices = question.votes.get(pseudonym);
-    if (!oldChoices && question.votes.size >= 5000) throw new ApiError(409, '回答者数の上限に達しました。');
+    if (!oldChoices && question.votes.size >= 5000) throw new ApiError(409, '回答者数の上限に達しました。', 'vote_full');
     choices.sort((a, b) => a - b);
     if (oldChoices?.length === choices.length && oldChoices.every((choice, index) => choice === choices[index])) {
       return voteRevision;

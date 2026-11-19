@@ -1,9 +1,9 @@
 import {
   $, el, button, message, request, poll, readFragment, storageGet, storageSet, emptyState, statusPill,
-  errorMessage, isRecord, RequestError
+  connection, isRecord, RequestError
 } from './common.js';
 import { chart } from './charts.js';
-import type { PublicQuestion, PublicResults, PublicState } from '../types.js';
+import type { PublicQuestion, PublicResults, PublicState, VoteInput } from '../types.js';
 
 const storageKey = 'fakeslido:participant';
 const lifetime = 24 * 60 * 60 * 1000;
@@ -22,6 +22,15 @@ interface ParticipantRecord {
   expiresAt: number;
   answers: Record<string, SavedAnswer>;
 }
+
+interface VoteAttempt {
+  sessionId: string;
+  input: VoteInput;
+  selections: number[];
+}
+
+// 未確認の送信はページ内だけに保持する。受理を確認するまで回答の控えに書かない。
+const retryVotes = new Map<string, { attempt: VoteAttempt; hint: string }>();
 
 function voterToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -68,6 +77,8 @@ let selectedId: string | undefined;
 let editing = false;
 let choices: number[] = [];
 let sending = false;
+let voteNotBefore = 0;
+let sessionInvalid = false;
 let results: PublicResults | null = null;
 let resultRequest = 0;
 
@@ -81,6 +92,10 @@ function invalid(text: string) {
   if (readRecord()?.code === code) storageSet(localStorage, storageKey, null);
   record = null;
   state = null;
+  sessionInvalid = true;
+  retryVotes.clear();
+  connection('未接続', true);
+  message('');
   resultRequest++;
   $('question-nav').hidden = true;
   $('ballot').replaceChildren(emptyState('投票に接続できません', text));
@@ -116,11 +131,36 @@ function pruneAnswers(record: ParticipantRecord, state: PublicState) {
   }
 }
 
+function retryBlock({ sessionId, input }: VoteAttempt): string | undefined {
+  if (state?.sessionId !== sessionId || record?.voterToken !== input.voterToken || record.expiresAt <= Date.now()) {
+    return '参加状態が変わりました。現在の質問を確認し、もう一度選択してください。';
+  }
+  const question = state.questions.find(item => item.questionId === input.questionId);
+  if (question && !question.isOpen) return 'この質問の投票受付は終了しました。';
+  if (question?.voteRevision !== input.voteRevision) return '質問が更新されました。もう一度選択してください。';
+}
+
+function discardDraft(questionId: string, hint: string) {
+  retryVotes.delete(questionId);
+  if (selectedId !== questionId) return;
+  choices = [];
+  editing = false;
+  message(hint);
+}
+
+function pruneRetries() {
+  for (const [id, { attempt }] of retryVotes) {
+    const reason = retryBlock(attempt);
+    if (reason) discardDraft(id, reason);
+  }
+}
+
 async function applyState(next: PublicState) {
-  if (state && next.revision < state.revision) return;
+  if (sessionInvalid || (state && next.revision < state.revision)) return;
   const record = ensureRecord(next.sessionId);
   const previous = currentQuestion();
   state = next;
+  pruneRetries();
   const priorAnswers = Object.keys(record.answers).length;
   pruneAnswers(record, next);
   if (Object.keys(record.answers).length !== priorAnswers) persist(record);
@@ -142,8 +182,11 @@ async function applyState(next: PublicState) {
 
 function selectQuestion(id: string) {
   selectedId = id;
-  editing = false;
-  choices = [];
+  const retry = retryVotes.get(id);
+  const question = currentQuestion();
+  editing = Boolean(retry && question && ownAnswer(question));
+  choices = retry ? [...retry.attempt.selections] : [];
+  message(retry?.hint ?? '');
   results = null;
   resultRequest++;
   render();
@@ -203,8 +246,10 @@ function receipt(question: PublicQuestion, answer: SavedAnswer) {
 function ballotForm(question: PublicQuestion, answer: SavedAnswer | null) {
   const multiple = question.type === 'multiple';
   const form = el('form', { cls: 'vote-form' });
-  const submit = el('button', { cls: 'primary', text: answer ? '変更を保存' : '投票する', attrs: { type: 'submit' } });
-  submit.disabled = sending || !choices.length;
+  const normalLabel = answer ? '変更を保存' : '投票する';
+  const submit = el('button', { cls: 'primary',
+    text: retryVotes.has(question.questionId) ? '同じ回答を再送信する' : normalLabel, attrs: { type: 'submit' } });
+  submit.disabled = voteBlocked() || !choices.length;
   const fields = el('fieldset', {}, el('legend', { cls: 'muted', text: multiple ? '当てはまる選択肢を選んでください。' : '選択肢を1つ選んでください。' }));
   for (const [index, text] of question.options.entries()) {
     const value = index + 1;
@@ -215,51 +260,140 @@ function ballotForm(question: PublicQuestion, answer: SavedAnswer | null) {
       choices = multiple
         ? [...form.querySelectorAll('input')].filter(element => element.checked).map(element => Number(element.value))
         : [value];
-      submit.disabled = !choices.length;
+      if (retryVotes.delete(question.questionId)) message('');
+      submit.textContent = normalLabel;
+      submit.disabled = voteBlocked() || !choices.length;
     });
     fields.append(el('label', { cls: 'ballot-option' }, input, el('span', { text })));
   }
   form.append(fields, el('div', { cls: 'actions' }, submit,
-    ...(editing ? [button('キャンセル', () => { editing = false; choices = []; render(); }, '', sending)] : [])));
+    ...(editing ? [button('キャンセル', () => {
+      if (retryVotes.delete(question.questionId)) message('');
+      editing = false;
+      choices = [];
+      render();
+    }, '', sending)] : [])));
   form.addEventListener('submit', event => {
     event.preventDefault();
-    vote(question);
+    const retry = retryVotes.get(question.questionId);
+    if (retry) void sendVote(retry.attempt);
+    else startVote(question);
   });
   return form;
 }
 
-async function vote(question: PublicQuestion) {
-  if (!state || sending || !choices.length) return;
-  const voter = ensureRecord(state.sessionId).voterToken;
+function voteBlocked() {
+  return sending || performance.now() < voteNotBefore;
+}
+
+function startVote(question: PublicQuestion) {
+  const current = currentQuestion();
+  if (!state || voteBlocked() || !choices.length || !current?.isOpen
+    || current.questionId !== question.questionId || current.voteRevision !== question.voteRevision) return;
+  const selections = [...choices];
+  void sendVote({
+    sessionId: state.sessionId,
+    input: {
+      questionId: question.questionId,
+      voterToken: ensureRecord(state.sessionId).voterToken,
+      voteRevision: question.voteRevision,
+      choices: question.type === 'single' ? selections[0] : selections
+    },
+    selections
+  });
+}
+
+async function refreshAfterConflict(questionId: string) {
+  try {
+    await applyState(await request('/api/public/state', code));
+  } catch (error) {
+    if (error instanceof RequestError && (error.status === 401 || error.status === 410)) invalid(error.message);
+    else if (state && selectedId === questionId) {
+      message('最新の質問を読み込めませんでした。通信が回復したら質問を確認してください。');
+    }
+  }
+}
+
+async function handleVoteFailure(error: unknown, attempt: VoteAttempt) {
+  const { questionId } = attempt.input;
+  const showHint = (text: string) => {
+    if (selectedId === questionId) message(text);
+  };
+  if (error instanceof RequestError && (error.status === 401 || error.status === 410)) {
+    invalid(error.message);
+    return;
+  }
+  if (!state) return;
+  if (error instanceof RequestError && (error.status === 404 || (error.status === 409 && error.code !== 'vote_full'))) {
+    discardDraft(questionId, error.code === 'vote_closed' ? 'この質問の投票受付は終了しました。'
+      : '質問が更新されました。最新の質問を確認し、もう一度選択してください。');
+    await refreshAfterConflict(questionId);
+    return;
+  }
+
+  let hint: string;
+  if (error instanceof RequestError && error.status === 429) {
+    const seconds = error.retryAfter || 3;
+    voteNotBefore = performance.now() + seconds * 1000;
+    setTimeout(render, Math.min(seconds * 1000, 2_147_483_647));
+    hint = '投票が混み合っています。' + seconds + '秒ほど待ってから、再送信してください。';
+  } else if (!(error instanceof RequestError) || error.status === 408 || error.status >= 500) {
+    const timeout = (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name))
+      || (error instanceof RequestError && (error.status === 408 || error.status === 504));
+    hint = timeout ? '投票の送信がタイムアウトしました。同じ回答を再送信できます。'
+      : '通信エラーで投票の送信結果を確認できませんでした。同じ回答を再送信できます。';
+  } else {
+    retryVotes.delete(questionId);
+    showHint(error.message);
+    return;
+  }
+  const reason = retryBlock(attempt);
+  if (reason) {
+    discardDraft(questionId, reason);
+    return;
+  }
+  retryVotes.set(questionId, { attempt, hint });
+  if (selectedId === questionId) {
+    choices = [...attempt.selections];
+    const question = currentQuestion();
+    editing = Boolean(question && ownAnswer(question));
+    message(hint);
+  }
+}
+
+async function sendVote(attempt: VoteAttempt) {
+  if (voteBlocked()) return;
+  const { questionId, voterToken, voteRevision } = attempt.input;
+  const reason = retryBlock(attempt);
+  if (reason) {
+    discardDraft(questionId, reason);
+    render();
+    return;
+  }
   sending = true;
-  const submitted = [...choices];
   message('');
   render();
   try {
-    const response = await request('/api/public/vote', code, {
-      method: 'POST', data: {
-        questionId: question.questionId, voterToken: voter, voteRevision: question.voteRevision,
-        choices: question.type === 'single' ? submitted[0] : submitted
-      }
-    });
-    if (state?.sessionId === response.sessionId && record?.voterToken === voter
-      && state.questions.find(item => item.questionId === question.questionId)?.voteRevision === response.voteRevision) {
-      const record = ensureRecord(response.sessionId);
-      if (record.voterToken === voter) {
-        record.answers[question.questionId] = { voteRevision: response.voteRevision, choices: submitted };
-        persist(record);
+    const response = await request('/api/public/vote', code, { method: 'POST', data: attempt.input });
+    if (response?.sessionId !== attempt.sessionId || response.voteRevision !== voteRevision) {
+      throw new Error('投票の受理を確認できませんでした。');
+    }
+    retryVotes.delete(questionId);
+    if (state?.sessionId === attempt.sessionId && record?.voterToken === voterToken
+      && state.questions.find(item => item.questionId === questionId)?.voteRevision === voteRevision) {
+      const latest = ensureRecord(attempt.sessionId);
+      if (latest.voterToken === voterToken) {
+        latest.answers[questionId] = { voteRevision, choices: attempt.selections };
+        persist(latest);
       }
     }
-    if (selectedId === question.questionId) {
+    if (selectedId === questionId) {
       editing = false;
       choices = [];
     }
     if (state) updateResults().catch(() => {});
   } catch (error) {
-    if (error instanceof RequestError && error.status === 410) invalid(error.message);
-    else message(error instanceof RequestError && error.status === 429
-      ? '投票が混み合っています。少し待ってから、再度送信してください。'
-      : errorMessage(error, '投票を送信できませんでした。'));
+    await handleVoteFailure(error, attempt);
   } finally {
     sending = false;
     render();
@@ -304,6 +438,7 @@ poll('/api/public/state', codePattern.test(code ?? '') ? code : null, {
   onUnchanged: () => {
     if (state && record && record.expiresAt <= Date.now()) {
       ensureRecord(state.sessionId);
+      pruneRetries();
       editing = false;
       choices = [];
       results = null;

@@ -100,7 +100,9 @@ export class RequestError extends Error {
     super(typeof details?.error === 'string' ? details.error : 'サーバーとの通信に失敗しました。');
     this.status = response.status;
     this.code = typeof details?.code === 'string' ? details.code : undefined;
-    this.retryAfter = Number(response.headers.get('Retry-After')) || 0;
+    const header = response.headers.get('Retry-After');
+    const seconds = header && !/^\d+$/.test(header) ? (Date.parse(header) - Date.now()) / 1000 : Number(header);
+    this.retryAfter = Number.isFinite(seconds) ? Math.max(0, Math.ceil(seconds)) : 0;
   }
 }
 
@@ -139,6 +141,7 @@ export function request<Path extends keyof Mutations>(
 ): Promise<Mutations[Path]['response']>;
 export function request(path: `/api/public/results?questionId=${string}`, token: Credential): Promise<PublicResults>;
 export function request(path: '/api/admin/preflight', token: Credential): Promise<PreflightStatus>;
+export function request(path: '/api/public/state', token: Credential): Promise<PublicState>;
 export function request(path: '/api/present/state', token: Credential): Promise<PresentState>;
 export function request(
   path: ExportPath, token: Credential, options: { download: true }
