@@ -3,6 +3,7 @@ import {
   storageGet, storageSet, styleLabels, emptyState, statusPill, errorMessage, isRecord, RequestError
 } from './common.js';
 import { chart } from './charts.js';
+import type { ExportFormat } from './common.js';
 import type { AdminState, ControlInput, GraphStyle, Presentation, QuestionDefinition } from '../types.js';
 
 const key = tabCredential('admin');
@@ -23,6 +24,13 @@ const questionStyle = $('question-style', HTMLSelectElement);
 const copyLink = $('copy-link', HTMLButtonElement);
 const openPresent = $('open-present', HTMLButtonElement);
 const importInput = $('import', HTMLInputElement);
+const eraseDialog = $('erase-dialog', HTMLDialogElement);
+const eraseConfirm = $('erase-confirm', HTMLButtonElement);
+const eraseCancel = $('erase-cancel', HTMLButtonElement);
+const eraseError = $('erase-error');
+const eraseDownloads = { csv: $('erase-csv', HTMLButtonElement), json: $('erase-json', HTMLButtonElement) };
+let eraseTarget: string | null = null;
+let erasePending: 'erase' | 'export' | undefined;
 
 // 編集用のオブジェクトには回答数や公開状態を含めない。質問集 JSON の項目を保つ。
 function draft(question: QuestionDefinition): QuestionDefinition {
@@ -56,6 +64,7 @@ function applyState(next: AdminState) {
   openPresent.disabled = false;
   updateBackupControls();
   $('add', HTMLButtonElement).disabled = state.questions.length >= 50;
+  updateEraseDialog(next);
   render();
 }
 
@@ -335,17 +344,78 @@ importInput.addEventListener('change', async () => {
 $('deck-download').addEventListener('click', () => {
   downloadFile('fakeslido-deck.json', new Blob([JSON.stringify(deckData(), null, 2)], { type: 'application/json' }));
 });
-for (const format of ['csv', 'json'] as const) {
-  $(format + '-download').addEventListener('click', () => run(async () => {
-    const blob = await request(`/api/admin/export?format=${format}`, key, { download: true });
+
+function updateEraseDialog(next: AdminState) {
+  if (!eraseDialog.open) return;
+  // 複数選択でも、選んだ選択肢の数ではなく質問ごとの回答者数を足す。
+  const counts = next.questions.map(question => question.results.respondentCount);
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  $('erase-questions').textContent = String(counts.length);
+  $('erase-answered').textContent = String(counts.filter(count => count > 0).length);
+  $('erase-responses').textContent = String(total);
+  $('erase-exports').hidden = total === 0;
+  const changed = eraseTarget !== next.sessionId;
+  $('erase-session-changed').hidden = !changed;
+  eraseConfirm.disabled = changed || erasePending !== undefined;
+  eraseConfirm.textContent = erasePending === 'erase' ? '消去中…' : '消去する';
+  eraseCancel.disabled = erasePending === 'erase';
+  for (const button of Object.values(eraseDownloads)) button.disabled = eraseConfirm.disabled;
+}
+
+async function saveResults(format: ExportFormat, sessionId?: string) {
+  const path = sessionId === undefined ? `/api/admin/export?format=${format}` as const
+    : `/api/admin/export?format=${format}&sessionId=${encodeURIComponent(sessionId)}` as const;
+  const blob = await request(path, key, { download: true });
+  if (sessionId === undefined || (eraseDialog.open && state?.sessionId === sessionId)) {
     downloadFile('fakeslido-results.' + format, blob);
-  }));
+  }
+}
+
+async function withEraseTarget(
+  kind: 'erase' | 'export', operation: (sessionId: string) => Promise<void>
+) {
+  const sessionId = eraseTarget;
+  if (!sessionId || !state || state.sessionId !== sessionId || !eraseDialog.open || busy) return;
+  erasePending = kind;
+  updateEraseDialog(state);
+  try {
+    await run(async () => {
+      try {
+        await operation(sessionId);
+      } catch (error) {
+        if (!(error instanceof RequestError) || error.status !== 409) throw error;
+        // ポーリングより先に競合を受信した場合も、古い確認を再利用させない。
+        eraseTarget = null;
+      }
+    }, eraseError);
+  } finally {
+    erasePending = undefined;
+    updateEraseDialog(currentState());
+  }
+}
+
+for (const format of ['csv', 'json'] as const) {
+  $(format + '-download').addEventListener('click', () => run(() => saveResults(format)));
+  eraseDownloads[format].addEventListener('click', () => withEraseTarget('export', id => saveResults(format, id)));
 }
 $('erase').addEventListener('click', () => {
-  if (window.confirm('サーバー上の質問・票をすべて消去しますか？ 現在の参加URLと発表URLは無効になります。')) {
-    control({ action: 'erase', confirm: true });
-  }
+  if (!state || busy || eraseDialog.open) return;
+  eraseTarget = state.sessionId;
+  message('', eraseError);
+  eraseDialog.showModal();
+  updateEraseDialog(state);
 });
+eraseCancel.addEventListener('click', () => eraseDialog.close());
+eraseDialog.addEventListener('cancel', event => {
+  if (erasePending === 'erase') event.preventDefault();
+});
+eraseConfirm.addEventListener('click', () => withEraseTarget('erase', async sessionId => {
+  const next = await request('/api/admin/control', key, {
+    method: 'POST', data: { action: 'erase', confirm: true, sessionId }
+  });
+  eraseDialog.close();
+  applyState(next);
+}));
 if (!canShareParticipantUrl) copyLink.textContent = 'この端末用の参加URLをコピー';
 copyLink.addEventListener('click', () => run(async () => {
   await navigator.clipboard.writeText(participantUrl(currentState().participantCode));
@@ -361,5 +431,6 @@ poll('/api/admin/state', key, { interval: 0, onState: applyState, onInvalid: tex
   $('workspace').hidden = true;
   copyLink.disabled = true;
   openPresent.disabled = true;
+  eraseDialog.close();
   message(text);
 } });

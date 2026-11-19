@@ -130,13 +130,16 @@ interface Mutations {
   '/api/public/vote': { options: { method: 'POST'; data: VoteInput }; response: VoteReceipt };
 }
 
+export type ExportFormat = 'csv' | 'json';
+type ExportPath = `/api/admin/export?format=${ExportFormat | `${ExportFormat}&sessionId=${string}`}`;
+
 // 同一オリジンの API を共有型に結び付ける。外部ファイルや保存データの読み込みには使わない。
 export function request<Path extends keyof Mutations>(
   path: Path, token: Credential, options: Mutations[NoInfer<Path>]['options']
 ): Promise<Mutations[Path]['response']>;
 export function request(path: `/api/public/results?questionId=${string}`, token: Credential): Promise<PublicResults>;
 export function request(
-  path: `/api/admin/export?format=${'csv' | 'json'}`, token: Credential, options: { download: true }
+  path: ExportPath, token: Credential, options: { download: true }
 ): Promise<Blob>;
 export async function request(path: string, token: Credential, options: RequestOptions = {}): Promise<unknown> {
   const response = await fetchResponse(path, token, options);

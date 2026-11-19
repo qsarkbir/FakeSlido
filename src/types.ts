@@ -61,7 +61,7 @@ export interface DeckInput {
 }
 
 export type ControlInput =
-  | { action: 'erase'; questionId?: never; confirm: true }
+  | { action: 'erase'; questionId?: never; confirm: true; sessionId: string }
   | { action: 'show-results' | 'show-question'; questionId?: never; confirm?: boolean }
   | { action: 'open' | 'select' | 'close' | 'publish' | 'unpublish'; questionId: string; confirm?: boolean }
   | { action: 'reset-votes'; questionId: string; confirm: true };

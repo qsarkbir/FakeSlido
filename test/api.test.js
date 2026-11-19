@@ -50,10 +50,13 @@ async function fixture(options = {}) {
   const control = (action, questionId, confirm) => call('/api/admin/control', {
     method: 'POST', data: { action, questionId, confirm }
   });
+  const erase = (sessionId, token = key) => call('/api/admin/control', {
+    token, method: 'POST', data: { action: 'erase', confirm: true, sessionId }
+  });
   const vote = (token, questionId, choices, voteRevision, voterToken = newKey()) => call('/api/public/vote', {
     token, method: 'POST', data: { questionId, voterToken, choices, voteRevision }
   });
-  return { key, state, deck, control, call, vote };
+  return { key, state, deck, control, erase, call, vote };
 }
 
 test('公開状態、受付状態、発表モードが独立し、未オープンの質問を返さない', async () => {
@@ -190,19 +193,43 @@ test('編集、並べ替え、復元、リセットで票世代を正しく扱�
 });
 
 test('全消去で旧参加・発表キーを失効し、待機中の発表画面にも反映する', async () => {
-  const { call, deck, control } = await fixture();
+  const { call, deck, control, erase } = await fixture();
   const { body: before } = await deck([first]);
   const token = before.presentationToken;
   const current = await call('/api/present/state', { token });
   const waiting = call('/api/present/state?revision=' + current.body.revision, { token });
   assert.equal((await control('erase')).status, 400);
-  const { body: after } = await control('erase', undefined, true);
+  assert.equal((await erase()).status, 400);
+  assert.equal((await erase(1)).status, 400);
+  assert.equal((await erase(before.sessionId, before.participantCode)).status, 401);
+  const { status, body: after } = await erase(before.sessionId);
+  assert.equal(status, 200);
   assert.notEqual(after.sessionId, before.sessionId);
   assert.notEqual(after.participantCode, before.participantCode);
   assert.deepEqual(after.questions, []);
   assert.equal((await waiting).status, 410);
   assert.equal((await call('/api/public/state', { token: before.participantCode })).status, 410);
   assert.equal((await call('/api/admin/state')).status, 200);
+});
+
+test('以前のセッションの確認では現在のセッションを消去できない', async () => {
+  const { call, control, deck, erase, state, vote } = await fixture();
+  const before = await state();
+  const attempts = await Promise.all([erase(before.sessionId), erase(before.sessionId)]);
+  assert.deepEqual(attempts.map(result => result.status).sort(), [200, 409]);
+  const { body: current } = await deck([second]);
+  await control('open', 'two');
+  assert.equal((await vote(current.participantCode, 'two', [1, 2], current.questions[0].voteRevision)).status, 200);
+
+  const exportPath = '/api/admin/export?format=json&sessionId=';
+  assert.equal((await call(exportPath + before.sessionId)).status, 409);
+  assert.equal((await erase(before.sessionId)).status, 409);
+  const exported = await call(exportPath + current.sessionId);
+  assert.equal(exported.status, 200);
+  assert.equal(exported.body.sessionId, current.sessionId);
+  assert.equal(exported.body.questions[0].respondentCount, 1);
+  assert.equal(exported.body.questions[0].totalSelections, 2);
+  assert.equal((await state()).sessionId, current.sessionId);
 });
 
 test('管理の自動取得では有効期限を延長しない', async () => {
