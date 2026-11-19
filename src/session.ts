@@ -314,9 +314,10 @@ export class PollSession {
   }
 
   control(input: unknown) {
-    objectWith(input, ['action', 'questionId', 'confirm', 'sessionId']);
-    const { action, questionId, confirm, sessionId } = input;
+    objectWith(input, ['action', 'questionId', 'confirm', 'sessionId', 'deckRevision']);
+    const { action, questionId, confirm, sessionId, deckRevision } = input;
     requireValue(confirm === undefined || typeof confirm === 'boolean');
+    if (action !== 'advance') requireValue(deckRevision === undefined);
     if (action === 'erase') {
       requireValue(questionId === undefined && confirm === true, '全データ消去には確認が必要です。');
       requireValue(typeof sessionId === 'string' && sessionId.length > 0, '消去するセッションを確認してください。');
@@ -333,9 +334,16 @@ export class PollSession {
       this.#notify('admin');
       return;
     }
-    requireValue(sessionId === undefined);
-    if (action === 'show-results' || action === 'show-question') {
-      requireValue(questionId === undefined);
+    if (action === 'advance') {
+      requireValue(confirm === undefined && typeof sessionId === 'string' && sessionId.length > 0);
+      requireValue(typeof questionId === 'string' && idPattern.test(questionId) && Number.isSafeInteger(deckRevision));
+      this.requireSession(sessionId);
+      if (deckRevision !== this.deckRevision) {
+        throw new ApiError(409, '質問集が更新されました。最新の内容を確認してください。', 'deck_changed');
+      }
+      this.#advance(questionId);
+    } else if (action === 'show-results' || action === 'show-question') {
+      requireValue(sessionId === undefined && questionId === undefined);
       const question = this.#presentationQuestion();
       if (action === 'show-results') {
         requireValue(question?.everOpened, '発表する質問を一度オープンしてください。');
@@ -343,10 +351,24 @@ export class PollSession {
       }
       this.presentation.mode = action === 'show-results' ? 'results' : 'question';
     } else {
+      requireValue(sessionId === undefined);
       this.#controlQuestion(action, this.question(questionId), confirm);
     }
     this.touch();
     this.#notify('admin', 'public', 'present');
+  }
+
+  #advance(questionId: string) {
+    const current = this.#presentationQuestion();
+    if (!current || current.questionId !== questionId) {
+      throw new ApiError(409, '発表対象が切り替わりました。最新の内容を確認してください。');
+    }
+    const ordered = [...this.questions.values()];
+    const next = ordered[ordered.indexOf(current) + 1];
+    if (!next) throw new ApiError(409, 'これが最後の質問です。');
+    // 状態を変える前に対象を確定し、受付と発表を更新してから一度だけ通知する。
+    this.#controlQuestion('close', current, undefined);
+    this.#controlQuestion('open', next, undefined);
   }
 
   #controlQuestion(action: unknown, question: Question, confirm: boolean | undefined) {
