@@ -1,29 +1,58 @@
 import {
-  $, el, button, message, request, poll, readFragment, storageGet, storageSet, emptyState, statusPill
+  $, el, button, message, request, poll, readFragment, storageGet, storageSet, emptyState, statusPill,
+  errorMessage, isRecord, RequestError
 } from './common.js';
 import { chart } from './charts.js';
+import type { PublicQuestion, PublicResults, PublicState } from '../types.js';
 
 const storageKey = 'fakeslido:participant';
 const lifetime = 24 * 60 * 60 * 1000;
 const codePattern = /^[A-Za-z0-9_-]{22}$/;
 const voterPattern = /^[A-Za-z0-9_-]{43}$/;
 
+interface SavedAnswer {
+  voteRevision: number;
+  choices: number[];
+}
+
+interface ParticipantRecord {
+  code: string;
+  sessionId: string;
+  voterToken: string;
+  expiresAt: number;
+  answers: Record<string, SavedAnswer>;
+}
+
 function voterToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 }
 
-function readRecord() {
+// localStorage の JSON は unknown。以前の保存キーと形を維持し、読める回答だけを復元する。
+function readRecord(): ParticipantRecord | null {
   try {
-    const saved = JSON.parse(storageGet(localStorage, storageKey));
-    if (saved && Number.isFinite(saved.expiresAt) && saved.expiresAt > Date.now()
-      && codePattern.test(saved.code) && voterPattern.test(saved.voterToken)
-      && saved.answers && typeof saved.answers === 'object' && !Array.isArray(saved.answers)) {
-      saved.answers = Object.assign(Object.create(null), saved.answers);
-      return saved;
+    const saved: unknown = JSON.parse(storageGet(localStorage, storageKey) ?? 'null');
+    if (isRecord(saved)) {
+      const { code, sessionId, voterToken, expiresAt, answers: storedAnswers } = saved;
+      if (typeof code === 'string' && codePattern.test(code) && typeof sessionId === 'string'
+        && typeof voterToken === 'string' && voterPattern.test(voterToken)
+        && typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > Date.now()
+        && isRecord(storedAnswers)) {
+        const answers: Record<string, SavedAnswer> = Object.create(null);
+        for (const [id, answer] of Object.entries(storedAnswers)) {
+          if (!isRecord(answer)) continue;
+          const { voteRevision, choices } = answer;
+          if (typeof voteRevision === 'number' && Number.isSafeInteger(voteRevision)
+            && Array.isArray(choices) && choices.every((choice: unknown): choice is number =>
+              typeof choice === 'number' && Number.isSafeInteger(choice) && choice > 0)) {
+            answers[id] = { voteRevision, choices };
+          }
+        }
+        return { code, sessionId, voterToken, expiresAt, answers };
+      }
     }
   } catch {
-    // Outdated or invalid browser data is discarded.
+    // 解析できない控えは、新しいセッションの回答に使わない。
   }
   storageSet(localStorage, storageKey, null);
   return null;
@@ -31,24 +60,24 @@ function readRecord() {
 
 const saved = readRecord();
 const fragment = readFragment();
-const code = fragment || saved?.code;
+const code = fragment || saved?.code || '';
 if (fragment && fragment !== saved?.code) storageSet(localStorage, storageKey, null);
-let record = saved?.code === code ? saved : null;
-let state;
-let selectedId;
+let record: ParticipantRecord | null = saved?.code === code ? saved : null;
+let state: PublicState | null = null;
+let selectedId: string | undefined;
 let editing = false;
-let choices = [];
+let choices: number[] = [];
 let sending = false;
-let results;
+let results: PublicResults | null = null;
 let resultRequest = 0;
 
-function persist() {
+function persist(record: ParticipantRecord) {
   if (!storageSet(localStorage, storageKey, JSON.stringify(record))) {
     message('ブラウザに回答の控えを保存できません。この画面を開いている間は回答を確認できます。');
   }
 }
 
-function invalid(text) {
+function invalid(text: string) {
   if (readRecord()?.code === code) storageSet(localStorage, storageKey, null);
   record = null;
   state = null;
@@ -57,43 +86,44 @@ function invalid(text) {
   $('ballot').replaceChildren(emptyState('投票に接続できません', text));
 }
 
-function ensureRecord(sessionId) {
+function ensureRecord(sessionId: string): ParticipantRecord {
   const latest = readRecord();
   if (latest?.sessionId === sessionId && latest.code === code
     && (!record || latest.voterToken === record.voterToken || record.expiresAt <= Date.now())) {
     record = latest;
   }
-  if (record?.sessionId === sessionId && record.expiresAt > Date.now()) return;
+  if (record?.sessionId === sessionId && record.expiresAt > Date.now()) return record;
   record = {
     code, sessionId, voterToken: voterToken(), expiresAt: Date.now() + lifetime, answers: Object.create(null)
   };
-  persist();
+  persist(record);
+  return record;
 }
 
 function currentQuestion() {
   return state?.questions.find(question => question.questionId === selectedId);
 }
 
-function ownAnswer(question) {
+function ownAnswer(question: PublicQuestion): SavedAnswer | null {
   const answer = record?.answers[question.questionId];
-  return answer?.voteRevision === question.voteRevision && Array.isArray(answer.choices) ? answer : null;
+  return answer?.voteRevision === question.voteRevision ? answer : null;
 }
 
-function pruneAnswers() {
+function pruneAnswers(record: ParticipantRecord, state: PublicState) {
   for (const [id, answer] of Object.entries(record.answers)) {
     const question = state.questions.find(item => item.questionId === id);
     if (!question || question.voteRevision !== answer?.voteRevision) delete record.answers[id];
   }
 }
 
-async function applyState(next) {
+async function applyState(next: PublicState) {
   if (state && next.revision < state.revision) return;
-  ensureRecord(next.sessionId);
+  const record = ensureRecord(next.sessionId);
   const previous = currentQuestion();
   state = next;
   const priorAnswers = Object.keys(record.answers).length;
-  pruneAnswers();
-  if (Object.keys(record.answers).length !== priorAnswers) persist();
+  pruneAnswers(record, next);
+  if (Object.keys(record.answers).length !== priorAnswers) persist(record);
   if (!currentQuestion()) {
     selectedId = next.questions.find(question => question.isOpen)?.questionId ?? next.questions[0]?.questionId;
     editing = false;
@@ -110,7 +140,7 @@ async function applyState(next) {
   await updateResults();
 }
 
-function selectQuestion(id) {
+function selectQuestion(id: string) {
   selectedId = id;
   editing = false;
   choices = [];
@@ -120,7 +150,7 @@ function selectQuestion(id) {
   updateResults().catch(() => {});
 }
 
-function nav() {
+function nav(state: PublicState) {
   const nav = $('question-nav');
   nav.hidden = !state.questions.length;
   nav.replaceChildren(...state.questions.map((question, index) => {
@@ -133,7 +163,7 @@ function nav() {
 
 function render() {
   if (!state) return;
-  nav();
+  nav(state);
   const panel = $('ballot');
   const question = currentQuestion();
   if (!question) {
@@ -158,7 +188,7 @@ function render() {
   panel.replaceChildren(heading, content);
 }
 
-function receipt(question, answer) {
+function receipt(question: PublicQuestion, answer: SavedAnswer) {
   const optionList = el('ul', { cls: 'answer-list' },
     ...answer.choices.map(index => el('li', { text: question.options[index - 1] })));
   return el('div', { cls: 'receipt' },
@@ -170,7 +200,7 @@ function receipt(question, answer) {
     }, 'compact', sending)] : []));
 }
 
-function ballotForm(question, answer) {
+function ballotForm(question: PublicQuestion, answer: SavedAnswer | null) {
   const multiple = question.type === 'multiple';
   const form = el('form', { cls: 'vote-form' });
   const submit = el('button', { cls: 'primary', text: answer ? '変更を保存' : '投票する', attrs: { type: 'submit' } });
@@ -183,7 +213,7 @@ function ballotForm(question, answer) {
     input.disabled = sending;
     input.addEventListener('change', () => {
       choices = multiple
-        ? [...form.querySelectorAll('input:checked')].map(element => Number(element.value))
+        ? [...form.querySelectorAll('input')].filter(element => element.checked).map(element => Number(element.value))
         : [value];
       submit.disabled = !choices.length;
     });
@@ -198,12 +228,11 @@ function ballotForm(question, answer) {
   return form;
 }
 
-async function vote(question) {
-  if (sending || !choices.length) return;
-  ensureRecord(state.sessionId);
+async function vote(question: PublicQuestion) {
+  if (!state || sending || !choices.length) return;
+  const voter = ensureRecord(state.sessionId).voterToken;
   sending = true;
   const submitted = [...choices];
-  const voter = record.voterToken;
   message('');
   render();
   try {
@@ -215,10 +244,10 @@ async function vote(question) {
     });
     if (state?.sessionId === response.sessionId && record?.voterToken === voter
       && state.questions.find(item => item.questionId === question.questionId)?.voteRevision === response.voteRevision) {
-      ensureRecord(response.sessionId);
+      const record = ensureRecord(response.sessionId);
       if (record.voterToken === voter) {
         record.answers[question.questionId] = { voteRevision: response.voteRevision, choices: submitted };
-        persist();
+        persist(record);
       }
     }
     if (selectedId === question.questionId) {
@@ -227,8 +256,10 @@ async function vote(question) {
     }
     if (state) updateResults().catch(() => {});
   } catch (error) {
-    if (error.status === 410) invalid(error.message);
-    else message(error.status === 429 ? '投票が混み合っています。少し待ってから、再度送信してください。' : error.message);
+    if (error instanceof RequestError && error.status === 410) invalid(error.message);
+    else message(error instanceof RequestError && error.status === 429
+      ? '投票が混み合っています。少し待ってから、再度送信してください。'
+      : errorMessage(error, '投票を送信できませんでした。'));
   } finally {
     sending = false;
     render();
@@ -240,7 +271,7 @@ async function updateResults() {
   if (!record || !question?.resultsPublished || !ownAnswer(question) || editing) return;
   const index = ++resultRequest;
   try {
-    const data = await request('/api/public/results?questionId=' + encodeURIComponent(question.questionId), code);
+    const data = await request(`/api/public/results?questionId=${encodeURIComponent(question.questionId)}`, code);
     const current = currentQuestion();
     if (index !== resultRequest || state?.sessionId !== data.sessionId || !current?.resultsPublished
       || current.questionId !== data.question.questionId || current.voteRevision !== data.question.voteRevision) return;
@@ -248,7 +279,7 @@ async function updateResults() {
     render();
   } catch (error) {
     if (index !== resultRequest) return;
-    if (error.status === 404) {
+    if (error instanceof RequestError && error.status === 404) {
       results = null;
       render();
     }
@@ -261,7 +292,7 @@ window.addEventListener('storage', event => {
   const latest = readRecord();
   if (latest?.code !== code || latest.sessionId !== state.sessionId || latest.voterToken !== record?.voterToken) return;
   record = latest;
-  pruneAnswers();
+  pruneAnswers(latest, state);
   render();
   updateResults().catch(() => {});
 });
@@ -271,7 +302,7 @@ poll('/api/public/state', codePattern.test(code ?? '') ? code : null, {
   interval: 2500,
   onState: applyState,
   onUnchanged: () => {
-    if (record && record.expiresAt <= Date.now()) {
+    if (state && record && record.expiresAt <= Date.now()) {
       ensureRecord(state.sessionId);
       editing = false;
       choices = [];

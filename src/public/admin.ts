@@ -1,33 +1,48 @@
 import {
   $, el, button, message, tabCredential, participantUrl, canShareParticipantUrl, request, poll, downloadFile,
-  storageGet, storageSet, styleLabels, emptyState, statusPill
+  storageGet, storageSet, styleLabels, emptyState, statusPill, errorMessage, isRecord, RequestError
 } from './common.js';
 import { chart } from './charts.js';
+import type { AdminState, ControlInput, GraphStyle, Presentation, QuestionDefinition } from '../types.js';
 
 const key = tabCredential('admin');
 const backupKey = 'fakeslido:deck';
-let state;
-let previousSessionId;
-let selectedId;
-let editing;
+let state: AdminState | undefined;
+let previousSessionId: string | undefined;
+let selectedId: string | undefined;
+let editing: { id: string | undefined; deckRevision: number } | undefined;
 let busy = false;
-const editor = $('editor');
+const editor = $('editor', HTMLDialogElement);
 const optionFields = $('option-fields');
-const submitEdit = $('edit-form').querySelector('[type="submit"]');
+const editForm = $('edit-form', HTMLFormElement);
+const submitEdit = editForm.querySelector('button[type="submit"]');
+if (!(submitEdit instanceof HTMLButtonElement)) throw new Error('質問を保存するボタンが見つかりません。');
+const questionText = $('question-text', HTMLTextAreaElement);
+const questionType = $('question-type', HTMLSelectElement);
+const questionStyle = $('question-style', HTMLSelectElement);
+const copyLink = $('copy-link', HTMLButtonElement);
+const openPresent = $('open-present', HTMLButtonElement);
+const importInput = $('import', HTMLInputElement);
 
-function draft(question) {
+// 編集用のオブジェクトには回答数や公開状態を含めない。質問集 JSON の項目を保つ。
+function draft(question: QuestionDefinition): QuestionDefinition {
   const { questionId, text, type, options, style } = question;
   return { questionId, text, type, options, style };
 }
 
 function deckData() {
-  return { format: 'fakeslido-deck', version: 1, questions: state.questions.map(draft) };
+  return { format: 'fakeslido-deck', version: 1, questions: currentState().questions.map(draft) };
 }
 
-function applyState(next) {
+function currentState(): AdminState {
+  if (!state) throw new Error('運営画面の状態を取得できませんでした。');
+  return state;
+}
+
+function applyState(next: AdminState) {
   if (next.sessionId === previousSessionId) return;
-  const sameSession = next.sessionId === state?.sessionId;
-  if (sameSession && next.revision <= state.revision) return;
+  const sameSession = state && next.sessionId === state.sessionId;
+  if (state && sameSession && next.revision <= state.revision) return;
   if (state && !sameSession) previousSessionId = state.sessionId;
   const newDeck = next.deckRevision !== state?.deckRevision;
   state = next;
@@ -37,21 +52,22 @@ function applyState(next) {
   if (newDeck && state.questions.length) storageSet(localStorage, backupKey, JSON.stringify(deckData()));
   else if (newDeck && sameSession) storageSet(localStorage, backupKey, null);
   $('workspace').hidden = false;
-  $('copy-link').disabled = false;
-  $('open-present').disabled = false;
+  copyLink.disabled = false;
+  openPresent.disabled = false;
   updateBackupControls();
-  $('add').disabled = state.questions.length >= 50;
+  $('add', HTMLButtonElement).disabled = state.questions.length >= 50;
   render();
 }
 
 function updateBackupControls() {
   const hasBackup = Boolean(storageGet(localStorage, backupKey));
-  $('restore').hidden = state.questions.length > 0 || !hasBackup;
+  $('restore').hidden = currentState().questions.length > 0 || !hasBackup;
   $('clear-backup').hidden = !hasBackup;
 }
 
 function render() {
-  const metrics = [
+  const state = currentState();
+  const metrics: [string, number][] = [
     ['質問数', state.questions.length],
     ['受付中', state.questions.filter(question => question.isOpen).length],
     ['結果公開済み', state.questions.filter(question => question.resultsPublished).length]
@@ -60,7 +76,8 @@ function render() {
     el('span', { text: label }), el('strong', { text: count })));
   $('overview').replaceChildren(...overview);
 
-  const focused = document.activeElement?.dataset.focus;
+  const active = document.activeElement;
+  const focused = active instanceof HTMLElement ? active.dataset.focus : undefined;
   $('questions').replaceChildren(...state.questions.map((question, index) => {
     const row = button('', () => {
       selectedId = question.questionId;
@@ -78,22 +95,26 @@ function render() {
     $('questions').append(el('p', { cls: 'list-empty muted', text: '質問はまだありません。' }));
     $('detail').replaceChildren(emptyState('最初の質問を作成', '質問を追加するか、保存した質問集を読み込んでください。'));
   } else {
-    renderDetail(state.questions.find(question => question.questionId === selectedId));
+    const selected = state.questions.find(question => question.questionId === selectedId);
+    if (selected) renderDetail(selected);
   }
   if (focused) {
     document.querySelectorAll('[data-focus]').forEach(element => {
-      if (element.dataset.focus === focused && !element.disabled) element.focus({ preventScroll: true });
+      if (element instanceof HTMLButtonElement && element.dataset.focus === focused && !element.disabled) {
+        element.focus({ preventScroll: true });
+      }
     });
   }
 }
 
-function action(label, handler, cls, disabled) {
+function action(label: string, handler: (event: MouseEvent) => void, cls?: string, disabled?: boolean) {
   const element = button(label, handler, cls, disabled);
   element.dataset.focus = label;
   return element;
 }
 
-function renderDetail(question) {
+function renderDetail(question: AdminState['questions'][number]) {
+  const state = currentState();
   const id = question.questionId;
   const inPresentation = state.presentation.questionId === id;
   const index = state.questions.findIndex(item => item.questionId === id);
@@ -106,10 +127,11 @@ function renderDetail(question) {
       text: (question.type === 'single' ? '単一選択' : '複数選択') + ' · ' + styleLabels[question.style] }));
   const controls = el('div', { cls: 'actions detail-actions' },
     action(question.isOpen ? '受付を終了' : '受付を開始して発表',
-      () => control(question.isOpen ? 'close' : 'open', id), question.isOpen ? '' : 'primary'),
+      () => control({ action: question.isOpen ? 'close' : 'open', questionId: id }), question.isOpen ? '' : 'primary'),
     action(question.resultsPublished ? '結果を非公開' : '結果を公開',
-      () => control(question.resultsPublished ? 'unpublish' : 'publish', id), '', !question.everOpened),
-    action('発表する質問に選択', () => control('select', id), '', inPresentation));
+      () => control({ action: question.resultsPublished ? 'unpublish' : 'publish', questionId: id }),
+      '', !question.everOpened),
+    action('発表する質問に選択', () => control({ action: 'select', questionId: id }), '', inPresentation));
   if (inPresentation) {
     controls.append(el('div', { cls: 'segmented', attrs: { role: 'group', 'aria-label': '発表モード' } },
       modeButton('質問モード', 'question'), modeButton('可視化モード', 'results', !question.everOpened)));
@@ -120,23 +142,26 @@ function renderDetail(question) {
     action('↑ 上へ', () => moveQuestion(index, -1), 'compact', index === 0),
     action('↓ 下へ', () => moveQuestion(index, 1), 'compact', index === state.questions.length - 1),
     action('票をリセット', () => {
-      if (window.confirm('この質問の票をすべてリセットしますか？')) control('reset-votes', id, true);
+      if (window.confirm('この質問の票をすべてリセットしますか？')) {
+        control({ action: 'reset-votes', questionId: id, confirm: true });
+      }
     }, 'compact'),
     action('質問を削除', () => {
       if (window.confirm('この質問を削除しますか？ この質問の票も消去されます。')) {
-        saveDeck(state.questions.filter(item => item.questionId !== id).map(draft), { confirmReset: true });
+        saveDeck(currentState().questions.filter(item => item.questionId !== id).map(draft), { confirmReset: true });
       }
     }, 'danger-link compact'));
   $('detail').replaceChildren(heading, controls, tally, tools);
 }
 
-function modeButton(label, mode, disabled) {
-  const element = action(label, () => control(mode === 'results' ? 'show-results' : 'show-question'), 'compact', disabled);
-  element.setAttribute('aria-pressed', String(state.presentation.mode === mode));
+function modeButton(label: string, mode: Presentation['mode'], disabled?: boolean) {
+  const element = action(label, () => control({ action: mode === 'results' ? 'show-results' : 'show-question' }),
+    'compact', disabled);
+  element.setAttribute('aria-pressed', String(currentState().presentation.mode === mode));
   return element;
 }
 
-async function run(operation, errorTarget = $('notice')) {
+async function run(operation: () => Promise<void>, errorTarget = $('notice')) {
   if (busy) return false;
   busy = true;
   try {
@@ -144,22 +169,31 @@ async function run(operation, errorTarget = $('notice')) {
     await operation();
     return true;
   } catch (error) {
-    message(error.message || '操作を完了できませんでした。', errorTarget);
+    message(errorMessage(error, '操作を完了できませんでした。'), errorTarget);
     return false;
   } finally {
     busy = false;
   }
 }
 
-function control(actionName, questionId, confirm) {
+function control(data: ControlInput) {
   return run(async () => {
     applyState(await request('/api/admin/control', key, {
-      method: 'POST', data: { action: actionName, questionId, confirm }
+      method: 'POST', data
     }));
   });
 }
 
-function saveDeck(questions, { replace, confirmReset, deckRevision = state.deckRevision, errorTarget } = {}) {
+interface SaveOptions {
+  replace?: boolean;
+  confirmReset?: boolean;
+  deckRevision?: number;
+  errorTarget?: HTMLElement;
+}
+
+function saveDeck(questions: unknown[], {
+  replace, confirmReset, deckRevision = currentState().deckRevision, errorTarget
+}: SaveOptions = {}) {
   return run(async () => {
     const data = { questions, deckRevision, replace, confirmReset };
     const send = () => request('/api/admin/deck', key, { method: 'PUT', data });
@@ -167,7 +201,7 @@ function saveDeck(questions, { replace, confirmReset, deckRevision = state.deckR
     try {
       next = await send();
     } catch (error) {
-      if (error.code !== 'confirm_reset') throw error;
+      if (!(error instanceof RequestError) || error.code !== 'confirm_reset') throw error;
       if (!window.confirm('この操作で対象の質問の票が消去されます。続けますか？')) return;
       data.confirmReset = true;
       next = await send();
@@ -178,48 +212,53 @@ function saveDeck(questions, { replace, confirmReset, deckRevision = state.deckR
   }, errorTarget);
 }
 
-function moveQuestion(index, offset) {
-  const questions = state.questions.map(draft);
+function moveQuestion(index: number, offset: number) {
+  const questions = currentState().questions.map(draft);
   const [question] = questions.splice(index, 1);
   questions.splice(index + offset, 0, question);
   saveDeck(questions);
 }
 
-async function reloadDeck(raw) {
+async function reloadDeck(raw: string | null) {
   try {
-    const data = JSON.parse(raw);
-    if (data?.format !== 'fakeslido-deck' || data.version !== 1 || !Array.isArray(data.questions)) {
+    const data: unknown = JSON.parse(raw ?? 'null');
+    if (!isRecord(data) || data.format !== 'fakeslido-deck' || data.version !== 1 || !Array.isArray(data.questions)) {
       throw new Error('FakeSlido の質問集 JSON を選んでください。');
     }
-    if (state.questions.length && !window.confirm('現在の質問集を置き換えますか？ 受付と公開状態は初期化されます。')) return;
+    // 旧形式の入れ物を確認し、個々の質問は既存のサーバー検証に委ねる。
+    if (currentState().questions.length && !window.confirm('現在の質問集を置き換えますか？ 受付と公開状態は初期化されます。')) return;
     await saveDeck(data.questions, { replace: true });
   } catch (error) {
-    message(error instanceof SyntaxError ? '質問集のJSON形式を確認してください。' : error.message);
+    message(error instanceof SyntaxError ? '質問集のJSON形式を確認してください。'
+      : errorMessage(error, '質問集を読み込めませんでした。'));
   }
 }
 
 function syncOptions() {
   const count = optionFields.children.length;
   [...optionFields.children].forEach((row, index) => {
-    row.querySelector('span').textContent = String(index + 1);
-    row.querySelector('input').setAttribute('aria-label', '選択肢 ' + (index + 1));
+    const number = row.querySelector('span');
+    if (number) number.textContent = String(index + 1);
+    row.querySelector('input')?.setAttribute('aria-label', '選択肢 ' + (index + 1));
     const remove = row.querySelector('button');
-    remove.setAttribute('aria-label', '選択肢 ' + (index + 1) + ' を削除');
-    remove.disabled = count <= 2;
+    if (remove) {
+      remove.setAttribute('aria-label', '選択肢 ' + (index + 1) + ' を削除');
+      remove.disabled = count <= 2;
+    }
   });
-  $('add-option').disabled = count >= 8;
+  $('add-option', HTMLButtonElement).disabled = count >= 8;
   updateStyles();
 }
 
-function updateStyles(preferred = $('question-style').value) {
-  const single = $('question-type').value === 'single';
+function updateStyles(preferred = questionStyle.value) {
+  const single = questionType.value === 'single';
   const count = optionFields.children.length;
-  const choices = ['horizontal', 'vertical'];
+  const choices: GraphStyle[] = ['horizontal', 'vertical'];
   if (single && count <= 6) choices.push('donut');
   if (single && count <= 4) choices.push('stacked');
-  $('question-style').replaceChildren(...choices.map(value =>
+  questionStyle.replaceChildren(...choices.map(value =>
     el('option', { text: styleLabels[value], attrs: { value } })));
-  $('question-style').value = choices.includes(preferred) ? preferred : 'horizontal';
+  questionStyle.value = choices.some(style => style === preferred) ? preferred : 'horizontal';
 }
 
 function addOption(value = '') {
@@ -231,11 +270,11 @@ function addOption(value = '') {
   return input;
 }
 
-function showEditor(question) {
-  editing = { id: question?.questionId, deckRevision: state.deckRevision };
+function showEditor(question?: QuestionDefinition) {
+  editing = { id: question?.questionId, deckRevision: currentState().deckRevision };
   $('editor-title').textContent = question ? '質問を編集' : '質問を追加';
-  $('question-text').value = question?.text ?? '';
-  $('question-type').value = question?.type ?? 'single';
+  questionText.value = question?.text ?? '';
+  questionType.value = question?.type ?? 'single';
   optionFields.replaceChildren();
   (question?.options ?? ['', '']).forEach(addOption);
   syncOptions();
@@ -244,24 +283,35 @@ function showEditor(question) {
   editor.showModal();
 }
 
-$('edit-form').addEventListener('submit', async event => {
+function isGraphStyle(value: string): value is GraphStyle {
+  return Object.hasOwn(styleLabels, value);
+}
+
+editForm.addEventListener('submit', async event => {
   event.preventDefault();
-  const question = {
-    questionId: editing.id ?? crypto.randomUUID(), text: $('question-text').value, type: $('question-type').value,
+  if (!editing) return;
+  const type = questionType.value;
+  const style = questionStyle.value;
+  if ((type !== 'single' && type !== 'multiple') || !isGraphStyle(style)) {
+    return message('回答形式とグラフを選んでください。', $('edit-error'));
+  }
+  const { id, deckRevision } = editing;
+  const question: QuestionDefinition = {
+    questionId: id ?? crypto.randomUUID(), text: questionText.value, type,
     options: [...optionFields.querySelectorAll('input')].map(input => input.value),
-    style: $('question-style').value
+    style
   };
-  const questions = state.questions.map(item => item.questionId === editing.id ? question : draft(item));
-  if (!editing.id) questions.push(question);
+  const questions = currentState().questions.map(item => item.questionId === id ? question : draft(item));
+  if (!id) questions.push(question);
   submitEdit.disabled = true;
-  await saveDeck(questions, { deckRevision: editing.deckRevision, errorTarget: $('edit-error') });
+  await saveDeck(questions, { deckRevision, errorTarget: $('edit-error') });
   submitEdit.disabled = false;
   if (!editor.open) {
     selectedId = question.questionId;
     render();
   }
 });
-$('question-type').addEventListener('change', () => updateStyles());
+questionType.addEventListener('change', () => updateStyles());
 $('add-option').addEventListener('click', () => { const input = addOption(); syncOptions(); input.focus(); });
 $('cancel-edit').addEventListener('click', () => editor.close());
 $('cancel-edit-footer').addEventListener('click', () => editor.close());
@@ -274,9 +324,9 @@ $('clear-backup').addEventListener('click', () => {
     message('このブラウザの控えを削除しました。');
   }
 });
-$('import').addEventListener('change', async event => {
-  const [file] = event.target.files;
-  event.target.value = '';
+importInput.addEventListener('change', async () => {
+  const file = importInput.files?.[0];
+  importInput.value = '';
   if (!file) return;
   if (file.size > 256 * 1024) return message('質問集は256KBまで読み込めます。');
   try { await reloadDeck(await file.text()); }
@@ -285,31 +335,31 @@ $('import').addEventListener('change', async event => {
 $('deck-download').addEventListener('click', () => {
   downloadFile('fakeslido-deck.json', new Blob([JSON.stringify(deckData(), null, 2)], { type: 'application/json' }));
 });
-for (const format of ['csv', 'json']) {
+for (const format of ['csv', 'json'] as const) {
   $(format + '-download').addEventListener('click', () => run(async () => {
-    const blob = await request('/api/admin/export?format=' + format, key, { download: true });
+    const blob = await request(`/api/admin/export?format=${format}`, key, { download: true });
     downloadFile('fakeslido-results.' + format, blob);
   }));
 }
 $('erase').addEventListener('click', () => {
   if (window.confirm('サーバー上の質問・票をすべて消去しますか？ 現在の参加URLと発表URLは無効になります。')) {
-    control('erase', undefined, true);
+    control({ action: 'erase', confirm: true });
   }
 });
-if (!canShareParticipantUrl) $('copy-link').textContent = 'この端末用の参加URLをコピー';
-$('copy-link').addEventListener('click', () => run(async () => {
-  await navigator.clipboard.writeText(participantUrl(state.participantCode));
+if (!canShareParticipantUrl) copyLink.textContent = 'この端末用の参加URLをコピー';
+copyLink.addEventListener('click', () => run(async () => {
+  await navigator.clipboard.writeText(participantUrl(currentState().participantCode));
   message(canShareParticipantUrl ? '参加URLをコピーしました。'
     : 'この端末用の参加URLをコピーしました。別端末からの参加には、HTTPSで公開したURLを使ってください。');
 }));
-$('open-present').addEventListener('click', () => {
-  window.open('/present#' + state.presentationToken, '_blank', 'noopener,noreferrer');
+openPresent.addEventListener('click', () => {
+  window.open('/present#' + currentState().presentationToken, '_blank', 'noopener,noreferrer');
 });
 
 poll('/api/admin/state', key, { interval: 0, onState: applyState, onInvalid: text => {
   storageSet(sessionStorage, 'fakeslido:admin', null);
   $('workspace').hidden = true;
-  $('copy-link').disabled = true;
-  $('open-present').disabled = true;
+  copyLink.disabled = true;
+  openPresent.disabled = true;
   message(text);
 } });
