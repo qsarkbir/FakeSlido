@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    // Node.js の ESM と同じ規則で import を解決する。相対 import には出力後の .js を書く。
+    "module": "NodeNext",
+    "target": "ES2024",
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist",
+    // 段階的な移行の間は既存の .js も出力する。.ts には最初から厳密な型チェックがかかる。
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmitOnError": true
+  },
+  "include": ["src/**/*"]
+}
