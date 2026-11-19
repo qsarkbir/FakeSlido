@@ -92,7 +92,6 @@ export function setupPreflight(key: string | null, getState: () => AdminState | 
       const selected = questions.find(question => question.questionId === state.presentation.questionId);
       if (!selected) items.push('発表する質問が選ばれていません。');
       else if (!selected.everOpened) items.push('発表対象の質問はまだ一度も開いていません。');
-      if (selected?.type === 'discussion') items.push('コメントの発表表示はまだ利用できません。');
     }
     const nextWarnings = items.join('\n');
     if (nextWarnings !== warningText) {

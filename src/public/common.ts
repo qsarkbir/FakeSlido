@@ -1,4 +1,4 @@
-import type { AdminComments, AdminState, CommentControlInput, CommentReceipt, ControlInput, DeckInput, GraphStyle, LikeReceipt, PostCommentInput,
+import type { AdminComments, AdminState, CommentControlInput, CommentReceipt, ControlInput, DeckInput, DiscussionControlInput, GraphStyle, LikeReceipt, PostCommentInput,
   PreflightStatus, PresentState, PublicComments, PublicResults, PublicState, SetLikeInput, VoteInput, VoteReceipt
 } from '../types.js';
 
@@ -129,6 +129,7 @@ async function fetchResponse(path: string, token: Credential, { method = 'GET', 
 }
 
 interface Mutations {
+  '/api/admin/discussions/control': { options: { method: 'POST'; data: DiscussionControlInput }; response: AdminState };
   '/api/admin/comments/control': { options: { method: 'POST'; data: CommentControlInput }; response: AdminState };
   '/api/admin/control': { options: { method: 'POST'; data: ControlInput }; response: AdminState };
   '/api/admin/deck': { options: { method: 'PUT'; data: Omit<DeckInput, 'questions'> & { questions: unknown[] } };
@@ -155,6 +156,9 @@ export function request(
 export function request(path: '/api/present/state', token: Credential): Promise<PresentState>;
 export function request(
   path: ExportPath, token: Credential, options: { download: true }
+): Promise<Blob>;
+export function request(
+  path: `/api/admin/export-comments?sessionId=${string}`, token: Credential, options: { download: true }
 ): Promise<Blob>;
 export async function request(path: string, token: Credential, options: RequestOptions = {}): Promise<unknown> {
   const response = await fetchResponse(path, token, options);

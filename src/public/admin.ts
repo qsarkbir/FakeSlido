@@ -7,7 +7,8 @@ import { setupPreflight } from './preflight.js';
 import { draft, orderedItems } from './admin-deck.js';
 import type { AdminItem, DeckItem } from './admin-deck.js';
 import type { ExportFormat } from './common.js';
-import type { AdminComments, AdminDiscussion, AdminState, CommentControlInput, CommentVisibility, ControlInput, GraphStyle, Presentation } from '../types.js';
+import type { AdminComments, AdminDiscussion, AdminState, CommentControlInput, CommentVisibility, ControlInput,
+  DiscussionControlInput, GraphStyle, Presentation } from '../types.js';
 
 const key = tabCredential('admin');
 const backupKey = 'fakeslido:deck';
@@ -81,6 +82,7 @@ function applyState(next: AdminState) {
   $('add', HTMLButtonElement).disabled = items().length >= 50;
   $('discussion-option', HTMLOptionElement).disabled = state.discussions === undefined;
   $('discussion-option').hidden = state.discussions === undefined;
+  $('comments-download').hidden = state.discussions === undefined;
   updateEraseDialog(next);
   updatePreflight();
   render();
@@ -198,7 +200,10 @@ function renderDetail(question: AdminItem, openCount: number) {
 }
 
 function renderDiscussion(topic: AdminDiscussion) {
+  const state = currentState();
   const index = items().findIndex(item => item.questionId === topic.questionId);
+  const context = { sessionId: state.sessionId, questionId: topic.questionId, discussionRevision: topic.discussionRevision };
+  const inPresentation = state.presentation.questionId === topic.questionId;
   const heading = el('div', { cls: 'detail-heading' }, statusPill(topic.isOpen, topic.everOpened),
     el('h2', { text: topic.text }), el('p', { cls: 'muted', text:
       'コメント · ' + (topic.settings.moderationMode === 'manual' ? '事前審査' : '即時公開') +
@@ -206,7 +211,25 @@ function renderDiscussion(topic: AdminDiscussion) {
   const controls = el('div', { cls: 'actions detail-actions' },
     action(topic.isOpen ? '受付を緊急停止' : '受付を開始',
       () => control({ action: topic.isOpen ? 'close' : 'open', questionId: topic.questionId }),
-      topic.isOpen ? 'danger-link' : 'primary'));
+      topic.isOpen ? 'danger-link' : 'primary'),
+    action('コメント一覧を発表', () => discussionControl({ ...context, action: 'list' }), '', !topic.everOpened),
+    action('次へ', () => control({ action: 'advance', questionId: topic.questionId,
+      sessionId: state.sessionId, deckRevision: state.deckRevision }), 'compact', !inPresentation || index === items().length - 1));
+  const hidePresented = el('input', { attrs: { type: 'checkbox' } });
+  hidePresented.checked = topic.presentation.hidePresented;
+  const freezeOrder = el('input', { attrs: { type: 'checkbox' } });
+  freezeOrder.checked = topic.presentation.freezeOrder;
+  hidePresented.disabled = freezeOrder.disabled = !topic.everOpened;
+  const configure = async () => {
+    const saved = await discussionControl({ ...context, action: 'configure',
+      hidePresented: hidePresented.checked, freezeOrder: freezeOrder.checked });
+    if (!saved) render();
+  };
+  hidePresented.addEventListener('change', configure);
+  freezeOrder.addEventListener('change', configure);
+  const displaySettings = el('div', { cls: 'actions discussion-display-settings' },
+    el('label', {}, hidePresented, document.createTextNode('紹介済みを一覧から除く')),
+    el('label', {}, freezeOrder, document.createTextNode('発表の並び順を固定')));
   const tools = el('div', { cls: 'actions question-tools' },
     action('編集', () => showEditor(topic), 'compact'),
     action('↑ 上へ', () => moveQuestion(index, -1), 'compact', index === 0),
@@ -216,8 +239,8 @@ function renderDiscussion(topic: AdminDiscussion) {
         void saveDeck(items().filter(item => item.questionId !== topic.questionId).map(draft), { confirmReset: true });
       }
     }, 'danger-link compact'));
-  $('detail').replaceChildren(heading, controls,
-    el('p', { cls: 'muted', text: '受付停止後も閲覧・審査できます。通常の非表示には、再公開できる「非公開」を使ってください。コメントの発表表示と書き出しは現在利用できません。' }),
+  $('detail').replaceChildren(heading, controls, displaySettings,
+    el('p', { cls: 'muted', text: '受付停止後も閲覧・審査できます。通常の非表示には、再公開できる「非公開」を使ってください。紹介済みでも参加者は閲覧・いいねできます。画面共有は発表画面だけにしてください。' }),
     el('div', { attrs: { id: 'admin-comments' } }), tools);
   renderComments();
 }
@@ -263,6 +286,13 @@ function renderComments() {
       });
     };
     const actions = el('div', { cls: 'actions' });
+    if (comment.visibility === 'published') {
+      const context = { sessionId: snapshot.sessionId, questionId: snapshot.questionId,
+        discussionRevision: snapshot.discussionRevision, commentId: comment.commentId };
+      actions.append(button(comment.presented ? '紹介済みを解除' : '紹介済みにする',
+        () => void discussionControl({ ...context, action: 'set-presented', presented: !comment.presented }), 'compact'),
+      button('発表で拡大', () => void discussionControl({ ...context, action: 'focus' }), 'compact'));
+    }
     if (comment.visibility !== 'published') actions.append(button(comment.visibility === 'pending' ? '承認して公開' : '再公開',
       () => void update('publish'), 'compact'));
     if (comment.visibility !== 'hidden') actions.append(button('非公開', () => void update('hide'), 'compact'));
@@ -302,6 +332,19 @@ async function refreshComments() {
 }
 
 setInterval(() => void refreshComments(), 2500);
+
+function discussionControl(data: DiscussionControlInput) {
+  return run(async () => {
+    commentGeneration++;
+    try {
+      applyState(await request('/api/admin/discussions/control', key, { method: 'POST', data }));
+    } finally {
+      commentSnapshot = undefined;
+      renderComments();
+      void refreshComments();
+    }
+  });
+}
 
 function modeButton(label: string, mode: Presentation['mode'], disabled?: boolean) {
   const element = action(label, () => control({ action: mode === 'results' ? 'show-results' : 'show-question' }),
@@ -534,7 +577,9 @@ function updateEraseDialog(next: AdminState) {
   $('erase-comments').textContent = String(next.discussions?.reduce((sum, topic) => sum + topic.commentCount, 0) ?? 0);
   $('erase-answered').textContent = String(counts.filter(count => count > 0).length);
   $('erase-responses').textContent = String(total);
-  $('erase-exports').hidden = total === 0;
+  $('erase-exports').hidden = total === 0 && !next.discussions?.some(topic => topic.commentCount > 0);
+  $('erase-comments-download').hidden = next.discussions === undefined;
+  $('erase-comments-download', HTMLButtonElement).disabled = eraseTarget !== next.sessionId || erasePending !== undefined;
   const changed = eraseTarget !== next.sessionId;
   $('erase-session-changed').hidden = !changed;
   eraseConfirm.disabled = changed || erasePending !== undefined;
@@ -551,6 +596,20 @@ async function saveResults(format: ExportFormat, sessionId?: string) {
     downloadFile('fakeslido-results.' + format, blob);
   }
 }
+
+async function saveComments(sessionId: string) {
+  if (!window.confirm('公開済みコメントだけを JSON に保存します。自由記述に個人情報等が含まれる可能性があります。保存先と共有範囲を確認してください。承認待ち・非公開・削除済みの本文は含まれません。')) return;
+  const blob = await request(`/api/admin/export-comments?sessionId=${encodeURIComponent(sessionId)}`, key, { download: true });
+  if (state?.sessionId !== sessionId) throw new Error('セッションが切り替わったため、保存を中止しました。');
+  downloadFile('pochipoll-comments.json', blob);
+  message('コメント JSON をダウンロードしました。保存先をご確認ください。ブラウザから保存完了は確認できません。');
+}
+
+$('comments-download').addEventListener('click', () => {
+  const sessionId = currentState().sessionId;
+  void run(() => saveComments(sessionId));
+});
+$('erase-comments-download').addEventListener('click', () => withEraseTarget('export', saveComments));
 
 async function withEraseTarget(
   kind: 'erase' | 'export', operation: (sessionId: string) => Promise<void>

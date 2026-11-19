@@ -4,7 +4,7 @@ import type { ServerResponse } from 'node:http';
 import { Discussion, commentsPerSession, likesPerSession, validateDiscussion } from './discussion.js';
 import { ApiError, idPattern, objectWith, requireValue, textFits, tokenPattern } from './validation.js';
 import type {
-  AdminComments, AdminState, CommentControlInput, CommentReceipt, DeckInput, DiscussionDefinition, GraphStyle, LikeReceipt,
+  AdminComments, AdminState, CommentControlInput, CommentReceipt, CommentsExport, DeckInput, DiscussionDefinition, GraphStyle, LikeReceipt,
   PostCommentInput, Presentation, PresentState, PublicComments, PublicDiscussion, PublicQuestion, PublicResults,
   PublicState, Question, QuestionDefinition, ResultsExport, Role, SetLikeInput, Tally, VoteInput
 } from './types.js';
@@ -203,6 +203,12 @@ export class PollSession {
     }
     if (role === 'present') {
       const question = this.#presentationQuestion();
+      if (question?.type === 'discussion' && question.everOpened) {
+        return { ...base, participantCode: this.participantCode, mode: 'question', question: null,
+          discussion: { ...publicDiscussion(question, [...this.questions.keys()].indexOf(question.questionId)),
+            presentation: question.discussion.presentation, comments: question.discussion.presentComments() }
+        } satisfies PresentState;
+      }
       const visible = question?.type !== 'discussion' && question?.everOpened ? question : null;
       const tallyVisible = this.presentation.mode === 'results' && visible?.resultsPublished;
       return {
@@ -229,7 +235,8 @@ export class PollSession {
         ...publicQuestion(question), everOpened: question.everOpened, results: aggregate(question)
       })),
       ...(this.discussionEnabled && { discussions: questions.flatMap((q, index) => q.type === 'discussion'
-        ? [{ ...publicDiscussion(q, index), everOpened: q.everOpened, settings: q.settings, commentCount: q.discussion.size }]
+        ? [{ ...publicDiscussion(q, index), everOpened: q.everOpened, settings: q.settings, commentCount: q.discussion.size,
+          presentation: q.discussion.presentation }]
         : []) })
     } satisfies AdminState;
   }
@@ -327,7 +334,10 @@ export class PollSession {
     const { receipt, added } = topic.discussion.post(voterToken, clientSubmissionId, body, topic.settings,
       this.#discussionUsage('size') >= commentsPerSession);
     if (added) {
-      if (receipt.visibility === 'published') topic.discussion.revision = ++this.#commentRevision;
+      if (receipt.visibility === 'published') {
+        topic.discussion.revision = ++this.#commentRevision;
+        this.#notify('present');
+      }
       this.#notify('admin');
     }
     return receipt;
@@ -343,7 +353,10 @@ export class PollSession {
     requireValue(typeof commentId === 'string' && idPattern.test(commentId) && typeof liked === 'boolean');
     const { receipt, changed } = topic.discussion.setLike(commentId, voterToken, liked,
       this.#discussionUsage('likeCount') >= likesPerSession);
-    if (changed) topic.discussion.revision = ++this.#commentRevision;
+    if (changed) {
+      topic.discussion.revision = ++this.#commentRevision;
+      this.#notify('present');
+    }
     return receipt;
   }
 
@@ -378,9 +391,62 @@ export class PollSession {
     if (topic.discussionRevision !== discussionRevision) throw new ApiError(409, 'お題が更新されました。');
     const publicChanged = topic.discussion.control({ sessionId, questionId: topic.questionId,
       discussionRevision: topic.discussionRevision, commentId, action, expectedVisibility, confirm });
-    if (publicChanged) topic.discussion.revision = ++this.#commentRevision;
+    if (publicChanged) {
+      topic.discussion.revision = ++this.#commentRevision;
+      this.#notify('present');
+    }
     this.touch();
     this.#notify('admin');
+  }
+
+  controlDiscussion(input: unknown) {
+    objectWith(input, ['sessionId', 'questionId', 'discussionRevision', 'action', 'commentId', 'presented',
+      'hidePresented', 'freezeOrder']);
+    const { sessionId, questionId, discussionRevision, action, commentId, presented, hidePresented, freezeOrder } = input;
+    requireValue(typeof sessionId === 'string' && sessionId.length > 0 && Number.isSafeInteger(discussionRevision));
+    requireValue(action === 'list' || action === 'focus' || action === 'set-presented' || action === 'configure');
+    this.requireSession(sessionId);
+    const topic = this.#topic(questionId, true);
+    if (topic.discussionRevision !== discussionRevision) throw new ApiError(409, 'お題が更新されました。');
+    // 入力をすべて検証してから変更する。別の操作にだけ使える項目の混入も拒否する。
+    if (action === 'configure') {
+      requireValue(commentId === undefined && presented === undefined);
+      requireValue(typeof hidePresented === 'boolean' && typeof freezeOrder === 'boolean');
+      topic.discussion.configure(hidePresented, freezeOrder);
+    } else {
+      requireValue(hidePresented === undefined && freezeOrder === undefined);
+      if (action === 'set-presented') {
+        requireValue(typeof commentId === 'string' && idPattern.test(commentId) && typeof presented === 'boolean');
+        if (topic.discussion.setPresented(commentId, presented)) topic.discussion.revision = ++this.#commentRevision;
+      } else {
+        requireValue(presented === undefined);
+        if (action === 'focus') {
+          requireValue(typeof commentId === 'string' && idPattern.test(commentId));
+          topic.discussion.focus(commentId);
+        } else {
+          requireValue(commentId === undefined);
+          topic.discussion.focus(null);
+        }
+        this.presentation = { questionId: topic.questionId, mode: 'question' };
+      }
+    }
+    this.touch();
+    this.#notify('admin', 'present');
+  }
+
+  exportComments(sessionId: string): CommentsExport {
+    this.requireSession(sessionId);
+    // 書き出す項目を明示する。運営用一覧の流用は非公開本文や内部情報の混入につながる。
+    const topics = [...this.questions.values()].flatMap((topic, index) => topic.type !== 'discussion' ? [] : [{
+      questionId: topic.questionId, questionOrder: index + 1, questionText: topic.text,
+      settings: { ...topic.settings },
+      comments: topic.discussion.publicComments().map(({ commentId, body, likes, presented }) =>
+        ({ commentId, text: body, likes, presented }))
+    }]);
+    this.touch();
+    this.#notify('admin');
+    return { format: 'pochipoll-comments', version: 1, sessionId: this.sessionId,
+      exportedAt: new Date().toISOString(), topics };
   }
 
   #questionFromDraft(draft: QuestionDefinition | DiscussionDefinition, previous?: StoredQuestion): StoredQuestion {
