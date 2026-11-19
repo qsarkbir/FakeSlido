@@ -85,12 +85,14 @@ export function setupPreflight(key: string | null, getState: () => AdminState | 
     if (connection === 'reconnecting') items.push('運営画面は再接続中です。通信の回復を確認してください。');
     if (connection === 'connecting') items.push('運営画面の状態を取得しています。');
     if (state && connection !== 'invalid') {
-      if (state.questions.length === 0) items.push('質問がありません。');
-      const openCount = state.questions.filter(question => question.isOpen).length;
+      const questions = [...state.questions, ...state.discussions ?? []];
+      if (questions.length === 0) items.push('質問がありません。');
+      const openCount = questions.filter(question => question.isOpen).length;
       if (openCount > 1) items.push(openCount + '問を受付中です。参加者に表示する質問を確認してください。');
-      const selected = state.questions.find(question => question.questionId === state.presentation.questionId);
+      const selected = questions.find(question => question.questionId === state.presentation.questionId);
       if (!selected) items.push('発表する質問が選ばれていません。');
       else if (!selected.everOpened) items.push('発表対象の質問はまだ一度も開いていません。');
+      if (selected?.type === 'discussion') items.push('コメントの発表表示はまだ利用できません。');
     }
     const nextWarnings = items.join('\n');
     if (nextWarnings !== warningText) {

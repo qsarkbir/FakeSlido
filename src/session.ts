@@ -4,7 +4,7 @@ import type { ServerResponse } from 'node:http';
 import { Discussion, commentsPerSession, likesPerSession, validateDiscussion } from './discussion.js';
 import { ApiError, idPattern, objectWith, requireValue, textFits, tokenPattern } from './validation.js';
 import type {
-  AdminComments, AdminState, CommentReceipt, DeckInput, DiscussionDefinition, GraphStyle, LikeReceipt,
+  AdminComments, AdminState, CommentControlInput, CommentReceipt, DeckInput, DiscussionDefinition, GraphStyle, LikeReceipt,
   PostCommentInput, Presentation, PresentState, PublicComments, PublicDiscussion, PublicQuestion, PublicResults,
   PublicState, Question, QuestionDefinition, ResultsExport, Role, SetLikeInput, Tally, VoteInput
 } from './types.js';
@@ -360,6 +360,27 @@ export class PollSession {
     const topic = this.#topic(id);
     return { sessionId: this.sessionId, questionId: topic.questionId, discussionRevision: topic.discussionRevision,
       comments: topic.discussion.adminComments() };
+  }
+
+  controlComment(input: unknown) {
+    objectWith(input, ['sessionId', 'questionId', 'discussionRevision', 'commentId', 'action',
+      'expectedVisibility', 'confirm'] satisfies (keyof CommentControlInput)[]);
+    const { sessionId, discussionRevision, commentId, action, expectedVisibility, confirm } = input;
+    requireValue(typeof sessionId === 'string' && sessionId.length > 0);
+    requireValue(Number.isSafeInteger(discussionRevision));
+    requireValue(typeof commentId === 'string' && idPattern.test(commentId));
+    requireValue(action === 'publish' || action === 'hide' || action === 'delete');
+    requireValue(expectedVisibility === 'pending' || expectedVisibility === 'published' || expectedVisibility === 'hidden');
+    requireValue(confirm === undefined || typeof confirm === 'boolean');
+    requireValue(action !== 'delete' || confirm === true, '削除には確認が必要です。');
+    this.requireSession(sessionId);
+    const topic = this.#topic(input.questionId);
+    if (topic.discussionRevision !== discussionRevision) throw new ApiError(409, 'お題が更新されました。');
+    const publicChanged = topic.discussion.control({ sessionId, questionId: topic.questionId,
+      discussionRevision: topic.discussionRevision, commentId, action, expectedVisibility, confirm });
+    if (publicChanged) topic.discussion.revision = ++this.#commentRevision;
+    this.touch();
+    this.#notify('admin');
   }
 
   #questionFromDraft(draft: QuestionDefinition | DiscussionDefinition, previous?: StoredQuestion): StoredQuestion {

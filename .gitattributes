@@ -1,0 +1,2 @@
+# 固定ハッシュで検証する同梱ライブラリを Windows でも同じバイト列で配信する。
+public/vendor/qrcode.js text eol=lf

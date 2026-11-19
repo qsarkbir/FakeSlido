@@ -4,8 +4,10 @@ import {
 } from './common.js';
 import { chart } from './charts.js';
 import { setupPreflight } from './preflight.js';
+import { draft, orderedItems } from './admin-deck.js';
+import type { AdminItem, DeckItem } from './admin-deck.js';
 import type { ExportFormat } from './common.js';
-import type { AdminState, ControlInput, GraphStyle, Presentation, QuestionDefinition } from '../types.js';
+import type { AdminComments, AdminDiscussion, AdminState, CommentControlInput, CommentVisibility, ControlInput, GraphStyle, Presentation } from '../types.js';
 
 const key = tabCredential('admin');
 const backupKey = 'fakeslido:deck';
@@ -37,15 +39,18 @@ const extendExpiry = $('extend-expiry', HTMLButtonElement);
 const expiryRemaining = $('expiry-remaining');
 const expiryWarning = $('expiry-warning');
 let expiryDeadline: number | undefined;
+let commentSnapshot: AdminComments | undefined;
+let commentFilter: CommentVisibility = 'pending';
+let commentGeneration = 0;
+let commentsLoading = false;
 
-// 編集用のオブジェクトには回答数や公開状態を含めない。質問集 JSON の項目を保つ。
-function draft(question: QuestionDefinition): QuestionDefinition {
-  const { questionId, text, type, options, style } = question;
-  return { questionId, text, type, options, style };
+// API では分かれている選択式とお題を、運営画面では元の質問集順に扱う。
+function items() {
+  return orderedItems(currentState());
 }
 
 function deckData() {
-  return { format: 'fakeslido-deck', version: 1, questions: currentState().questions.map(draft) };
+  return { format: 'fakeslido-deck', version: 1, questions: items().map(draft) };
 }
 
 function currentState(): AdminState {
@@ -63,32 +68,36 @@ function applyState(next: AdminState) {
   // サーバー側の時刻差を、端末の時計変更の影響を受けない経過時間に換算する。
   expiryDeadline = performance.now() + (next.expiresAt - next.serverTime);
   renderExpiry();
-  if (!state.questions.some(question => question.questionId === selectedId)) {
-    selectedId = state.questions[0]?.questionId;
+  if (!items().some(question => question.questionId === selectedId)) {
+    selectedId = items()[0]?.questionId;
   }
-  if (newDeck && state.questions.length) storageSet(localStorage, backupKey, JSON.stringify(deckData()));
+  if (!sameSession) commentSnapshot = undefined;
+  if (newDeck && items().length) storageSet(localStorage, backupKey, JSON.stringify(deckData()));
   else if (newDeck && sameSession) storageSet(localStorage, backupKey, null);
   $('workspace').hidden = false;
   copyLink.disabled = false;
   openPresent.disabled = false;
   updateBackupControls();
-  $('add', HTMLButtonElement).disabled = state.questions.length >= 50;
+  $('add', HTMLButtonElement).disabled = items().length >= 50;
+  $('discussion-option', HTMLOptionElement).disabled = state.discussions === undefined;
+  $('discussion-option').hidden = state.discussions === undefined;
   updateEraseDialog(next);
   updatePreflight();
   render();
+  void refreshComments();
 }
 
 function updateBackupControls() {
   const hasBackup = Boolean(storageGet(localStorage, backupKey));
-  $('restore').hidden = currentState().questions.length > 0 || !hasBackup;
+  $('restore').hidden = items().length > 0 || !hasBackup;
   $('clear-backup').hidden = !hasBackup;
 }
 
 function render() {
   const state = currentState();
-  const openCount = state.questions.filter(question => question.isOpen).length;
+  const openCount = items().filter(question => question.isOpen).length;
   const metrics: [string, number][] = [
-    ['質問数', state.questions.length],
+    ['質問・お題数', items().length],
     ['受付中', openCount],
     ['結果公開済み', state.questions.filter(question => question.resultsPublished).length]
   ];
@@ -98,24 +107,28 @@ function render() {
 
   const active = document.activeElement;
   const focused = active instanceof HTMLElement ? active.dataset.focus : undefined;
-  $('questions').replaceChildren(...state.questions.map((question, index) => {
+  $('questions').replaceChildren(...items().map((question, index) => {
     const row = button('', () => {
       selectedId = question.questionId;
+      commentSnapshot = undefined;
+      commentGeneration++;
       render();
+      void refreshComments();
     }, 'question-row');
     row.setAttribute('aria-pressed', String(selectedId === question.questionId));
     row.dataset.focus = 'question-' + question.questionId;
     row.append(el('span', { cls: 'question-index', text: String(index + 1).padStart(2, '0') }),
       el('span', { cls: 'question-row-content' }, el('strong', { text: question.text }),
-        el('small', { text: question.results.respondentCount + ' 人が回答' })),
+        el('small', { text: question.type === 'discussion' ? question.commentCount + ' 件のコメント'
+          : question.results.respondentCount + ' 人が回答' })),
       statusPill(question.isOpen, question.everOpened));
     return row;
   }));
-  if (!state.questions.length) {
+  if (!items().length) {
     $('questions').append(el('p', { cls: 'list-empty muted', text: '質問はまだありません。' }));
     $('detail').replaceChildren(emptyState('最初の質問を作成', '質問を追加するか、保存した質問集を読み込んでください。'));
   } else {
-    const selected = state.questions.find(question => question.questionId === selectedId);
+    const selected = items().find(question => question.questionId === selectedId);
     if (selected) renderDetail(selected, openCount);
   }
   if (focused) {
@@ -133,12 +146,13 @@ function action(label: string, handler: (event: MouseEvent) => void, cls?: strin
   return element;
 }
 
-function renderDetail(question: AdminState['questions'][number], openCount: number) {
+function renderDetail(question: AdminItem, openCount: number) {
+  if (question.type === 'discussion') return renderDiscussion(question);
   const state = currentState();
   const id = question.questionId;
   const inPresentation = state.presentation.questionId === id;
-  const index = state.questions.findIndex(item => item.questionId === id);
-  const next = state.questions[index + 1];
+  const index = items().findIndex(item => item.questionId === id);
+  const next = items()[index + 1];
   const heading = el('div', { cls: 'detail-heading' },
     el('div', { cls: 'pills' }, statusPill(question.isOpen, question.everOpened),
       el('span', { cls: 'pill ' + (question.resultsPublished ? 'pill-purple' : 'pill-muted'),
@@ -167,7 +181,7 @@ function renderDetail(question: AdminState['questions'][number], openCount: numb
   const tools = el('div', { cls: 'actions question-tools' },
     action('編集', () => showEditor(question), 'compact'),
     action('↑ 上へ', () => moveQuestion(index, -1), 'compact', index === 0),
-    action('↓ 下へ', () => moveQuestion(index, 1), 'compact', index === state.questions.length - 1),
+    action('↓ 下へ', () => moveQuestion(index, 1), 'compact', index === items().length - 1),
     action('票をリセット', () => {
       if (window.confirm('この質問の票をすべてリセットしますか？')) {
         control({ action: 'reset-votes', questionId: id, confirm: true });
@@ -175,13 +189,119 @@ function renderDetail(question: AdminState['questions'][number], openCount: numb
     }, 'compact'),
     action('質問を削除', () => {
       if (window.confirm('この質問を削除しますか？ この質問の票も消去されます。')) {
-        saveDeck(currentState().questions.filter(item => item.questionId !== id).map(draft), { confirmReset: true });
+        saveDeck(items().filter(item => item.questionId !== id).map(draft), { confirmReset: true });
       }
     }, 'danger-link compact'));
   const warnings = openCount > 1 ? [el('p', { cls: 'notice',
     text: openCount + '問を受付中です。「次へ」で移動しても、ほかの質問の受付状態はそのままです。' })] : [];
   $('detail').replaceChildren(heading, controls, ...warnings, tally, tools);
 }
+
+function renderDiscussion(topic: AdminDiscussion) {
+  const index = items().findIndex(item => item.questionId === topic.questionId);
+  const heading = el('div', { cls: 'detail-heading' }, statusPill(topic.isOpen, topic.everOpened),
+    el('h2', { text: topic.text }), el('p', { cls: 'muted', text:
+      'コメント · ' + (topic.settings.moderationMode === 'manual' ? '事前審査' : '即時公開') +
+      ' · 投稿上限 ' + (topic.settings.maxPostsPerToken === 'unlimited' ? '制限なし' : topic.settings.maxPostsPerToken + '件') }));
+  const controls = el('div', { cls: 'actions detail-actions' },
+    action(topic.isOpen ? '受付を緊急停止' : '受付を開始',
+      () => control({ action: topic.isOpen ? 'close' : 'open', questionId: topic.questionId }),
+      topic.isOpen ? 'danger-link' : 'primary'));
+  const tools = el('div', { cls: 'actions question-tools' },
+    action('編集', () => showEditor(topic), 'compact'),
+    action('↑ 上へ', () => moveQuestion(index, -1), 'compact', index === 0),
+    action('↓ 下へ', () => moveQuestion(index, 1), 'compact', index === items().length - 1),
+    action('お題を削除', () => {
+      if (window.confirm('このお題とコメント・いいねをすべて削除しますか？ 復元できません。')) {
+        void saveDeck(items().filter(item => item.questionId !== topic.questionId).map(draft), { confirmReset: true });
+      }
+    }, 'danger-link compact'));
+  $('detail').replaceChildren(heading, controls,
+    el('p', { cls: 'muted', text: '受付停止後も閲覧・審査できます。通常の非表示には、再公開できる「非公開」を使ってください。コメントの発表表示と書き出しは現在利用できません。' }),
+    el('div', { attrs: { id: 'admin-comments' } }), tools);
+  renderComments();
+}
+
+function renderComments() {
+  const container = document.getElementById('admin-comments');
+  if (!container || !state) return;
+  const topic = state.discussions?.find(item => item.questionId === selectedId);
+  const snapshot = commentSnapshot;
+  if (!topic || !snapshot || snapshot.sessionId !== state.sessionId || snapshot.questionId !== selectedId ||
+      snapshot.discussionRevision !== topic.discussionRevision) {
+    container.replaceChildren(el('p', { text: 'コメントを取得しています…' }));
+    return;
+  }
+  const tabs = el('div', { cls: 'actions', attrs: { role: 'group', 'aria-label': 'コメントの公開状態' } });
+  const labels = { pending: '承認待ち', published: '公開中', hidden: '非公開' };
+  for (const visibility of ['pending', 'published', 'hidden'] as const) {
+    const count = snapshot.comments.filter(item => item.visibility === visibility).length;
+    const tab = button(labels[visibility] + ' (' + count + ')', () => {
+      commentFilter = visibility;
+      renderComments();
+    }, 'compact');
+    tab.setAttribute('aria-pressed', String(commentFilter === visibility));
+    tabs.append(tab);
+  }
+  const rows = snapshot.comments.filter(item => item.visibility === commentFilter).map(comment => {
+    const update = async (action: CommentControlInput['action']) => {
+      if (action === 'delete' && !window.confirm('このコメントの本文・いいねを完全に削除しますか？ 復元できません。')) return;
+      await run(async () => {
+        // 画面で確認したセッション・お題・公開状態を送り、古い画面からの操作を検出する。
+        commentGeneration++;
+        try {
+          applyState(await request('/api/admin/comments/control', key, { method: 'POST', data: {
+            sessionId: snapshot.sessionId, questionId: snapshot.questionId,
+            discussionRevision: snapshot.discussionRevision, commentId: comment.commentId,
+            action, expectedVisibility: comment.visibility, ...(action === 'delete' && { confirm: true })
+          } }));
+        } finally {
+          commentSnapshot = undefined;
+          renderComments();
+          void refreshComments();
+        }
+      });
+    };
+    const actions = el('div', { cls: 'actions' });
+    if (comment.visibility !== 'published') actions.append(button(comment.visibility === 'pending' ? '承認して公開' : '再公開',
+      () => void update('publish'), 'compact'));
+    if (comment.visibility !== 'hidden') actions.append(button('非公開', () => void update('hide'), 'compact'));
+    actions.append(button('削除', () => void update('delete'), 'danger-link compact'));
+    // 投稿本文を HTML として解析せず、textContent 経由で表示する。
+    return el('article', { cls: 'discussion-comment' }, el('p', { cls: 'discussion-body', text: comment.body }),
+      el('p', { cls: 'muted', text: comment.likes + ' いいね' }), actions);
+  });
+  container.replaceChildren(tabs, ...rows,
+    ...(rows.length ? [] : [el('p', { cls: 'muted', text: labels[commentFilter] + 'のコメントはありません。' })]));
+}
+
+async function refreshComments() {
+  const topic = state?.discussions?.find(item => item.questionId === selectedId);
+  if (!state || !topic || commentsLoading || $('workspace').hidden) return;
+  const sessionId = state.sessionId;
+  const generation = commentGeneration;
+  commentsLoading = true;
+  try {
+    const next = await request(`/api/admin/comments?questionId=${encodeURIComponent(topic.questionId)}`, key);
+    // 選択変更や削除のあとに遅れて届いた一覧で、消した本文を再表示しない。
+    if (generation !== commentGeneration || state.sessionId !== sessionId || selectedId !== topic.questionId ||
+        next.sessionId !== sessionId || next.discussionRevision !== topic.discussionRevision) return;
+    const changed = JSON.stringify(commentSnapshot) !== JSON.stringify(next);
+    commentSnapshot = next;
+    // 内容が同じポーリングでは DOM を作り直さず、キーボードのフォーカスを保つ。
+    if (changed) renderComments();
+  } catch {
+    if (generation === commentGeneration && selectedId === topic.questionId) {
+      commentSnapshot = undefined;
+      document.getElementById('admin-comments')?.replaceChildren(el('p', { cls: 'notice',
+        text: 'コメントを取得できません。接続を確認しています。' }));
+    }
+  } finally {
+    commentsLoading = false;
+  }
+}
+
+setInterval(() => void refreshComments(), 2500);
 
 function modeButton(label: string, mode: Presentation['mode'], disabled?: boolean) {
   const element = action(label, () => control({ action: mode === 'results' ? 'show-results' : 'show-question' }),
@@ -257,7 +377,7 @@ function saveDeck(questions: unknown[], {
       next = await send();
     } catch (error) {
       if (!(error instanceof RequestError) || error.code !== 'confirm_reset') throw error;
-      if (!window.confirm('この操作で対象の質問の票が消去されます。続けますか？')) return;
+      if (!window.confirm('この操作で対象の票・コメント・いいねが消去され、復元できません。続けますか？')) return;
       data.confirmReset = true;
       next = await send();
     }
@@ -268,7 +388,7 @@ function saveDeck(questions: unknown[], {
 }
 
 function moveQuestion(index: number, offset: number) {
-  const questions = currentState().questions.map(draft);
+  const questions = items().map(draft);
   const [question] = questions.splice(index, 1);
   questions.splice(index + offset, 0, question);
   saveDeck(questions);
@@ -281,7 +401,7 @@ async function reloadDeck(raw: string | null) {
       throw new Error('FakeSlido の質問集 JSON を選んでください。');
     }
     // 旧形式の入れ物を確認し、個々の質問は既存のサーバー検証に委ねる。
-    if (currentState().questions.length && !window.confirm('現在の質問集を置き換えますか？ 受付と公開状態は初期化されます。')) return;
+    if (items().length && !window.confirm('現在の質問集を置き換えますか？ 受付と公開状態は初期化されます。')) return;
     await saveDeck(data.questions, { replace: true });
   } catch (error) {
     message(error instanceof SyntaxError ? '質問集のJSON形式を確認してください。'
@@ -306,6 +426,11 @@ function syncOptions() {
 }
 
 function updateStyles(preferred = questionStyle.value) {
+  const discussion = questionType.value === 'discussion';
+  $('discussion-settings').hidden = !discussion;
+  $('choice-settings', HTMLFieldSetElement).disabled = discussion;
+  $('choice-settings').hidden = discussion;
+  $('graph-field').hidden = discussion;
   const single = questionType.value === 'single';
   const count = optionFields.children.length;
   const choices: GraphStyle[] = ['horizontal', 'vertical'];
@@ -325,15 +450,17 @@ function addOption(value = '') {
   return input;
 }
 
-function showEditor(question?: QuestionDefinition) {
+function showEditor(question?: DeckItem) {
   editing = { id: question?.questionId, deckRevision: currentState().deckRevision };
   $('editor-title').textContent = question ? '質問を編集' : '質問を追加';
   questionText.value = question?.text ?? '';
   questionType.value = question?.type ?? 'single';
   optionFields.replaceChildren();
-  (question?.options ?? ['', '']).forEach(addOption);
+  (question && question.type !== 'discussion' ? question.options : ['', '']).forEach(addOption);
+  $('moderation-mode', HTMLSelectElement).value = question?.type === 'discussion' ? question.settings.moderationMode : 'manual';
+  $('post-limit', HTMLSelectElement).value = String(question?.type === 'discussion' ? question.settings.maxPostsPerToken : 3);
   syncOptions();
-  updateStyles(question?.style);
+  updateStyles(question && question.type !== 'discussion' ? question.style : undefined);
   message('', $('edit-error'));
   editor.showModal();
 }
@@ -347,16 +474,23 @@ editForm.addEventListener('submit', async event => {
   if (!editing) return;
   const type = questionType.value;
   const style = questionStyle.value;
-  if ((type !== 'single' && type !== 'multiple') || !isGraphStyle(style)) {
+  if ((type !== 'discussion' && type !== 'single' && type !== 'multiple') || !isGraphStyle(style)) {
     return message('回答形式とグラフを選んでください。', $('edit-error'));
   }
   const { id, deckRevision } = editing;
-  const question: QuestionDefinition = {
+  const moderationMode = $('moderation-mode', HTMLSelectElement).value;
+  const limit = $('post-limit', HTMLSelectElement).value;
+  if (moderationMode !== 'manual' && moderationMode !== 'instant') return;
+  if (limit !== '1' && limit !== '3' && limit !== 'unlimited') return;
+  const question: DeckItem = type === 'discussion' ? {
+    questionId: id ?? crypto.randomUUID(), text: questionText.value, type,
+    settings: { moderationMode, maxPostsPerToken: limit === 'unlimited' ? limit : limit === '1' ? 1 : 3 }
+  } : {
     questionId: id ?? crypto.randomUUID(), text: questionText.value, type,
     options: [...optionFields.querySelectorAll('input')].map(input => input.value),
     style
   };
-  const questions = currentState().questions.map(item => item.questionId === id ? question : draft(item));
+  const questions = items().map(item => item.questionId === id ? question : draft(item));
   if (!id) questions.push(question);
   submitEdit.disabled = true;
   await saveDeck(questions, { deckRevision, errorTarget: $('edit-error') });
@@ -396,7 +530,8 @@ function updateEraseDialog(next: AdminState) {
   // 複数選択でも、選んだ選択肢の数ではなく質問ごとの回答者数を足す。
   const counts = next.questions.map(question => question.results.respondentCount);
   const total = counts.reduce((sum, count) => sum + count, 0);
-  $('erase-questions').textContent = String(counts.length);
+  $('erase-questions').textContent = String(orderedItems(next).length);
+  $('erase-comments').textContent = String(next.discussions?.reduce((sum, topic) => sum + topic.commentCount, 0) ?? 0);
   $('erase-answered').textContent = String(counts.filter(count => count > 0).length);
   $('erase-responses').textContent = String(total);
   $('erase-exports').hidden = total === 0;
@@ -479,5 +614,7 @@ poll('/api/admin/state', key, { interval: 0, onState: applyState, onConnection: 
   openPresent.disabled = true;
   eraseDialog.close();
   expiryDeadline = undefined;
+  commentSnapshot = undefined;
+  commentGeneration++;
   message(text);
 } });

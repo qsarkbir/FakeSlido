@@ -24,6 +24,7 @@ const assets = {
   '/admin.js': 'text/javascript; charset=utf-8',
   '/participate.js': 'text/javascript; charset=utf-8',
   '/participant-discussion.js': 'text/javascript; charset=utf-8',
+  '/admin-deck.js': 'text/javascript; charset=utf-8',
   '/present.js': 'text/javascript; charset=utf-8',
   '/charts.js': 'text/javascript; charset=utf-8',
   '/preflight.js': 'text/javascript; charset=utf-8',
@@ -111,7 +112,7 @@ type Route =
   | [method: 'GET', role: 'public', operation: 'results' | 'comments']
   | [method: 'POST', role: 'public', operation: 'vote' | 'post-comment' | 'set-like']
   | [method: 'PUT', role: 'admin', operation: 'deck']
-  | [method: 'POST', role: 'admin', operation: 'control']
+  | [method: 'POST', role: 'admin', operation: 'control' | 'comment-control']
   | [method: 'GET', role: 'admin', operation: 'export' | 'preflight' | 'admin-comments'];
 const routes = new Map<string, Route>([
   ['/api/public/state', ['GET', 'public', 'state']],
@@ -128,7 +129,8 @@ const routes = new Map<string, Route>([
 const discussionRoutes = new Map<string, Route[]>([
   ['/api/public/comments', [['GET', 'public', 'comments'], ['POST', 'public', 'post-comment']]],
   ['/api/public/likes', [['POST', 'public', 'set-like']]],
-  ['/api/admin/comments', [['GET', 'admin', 'admin-comments']]]
+  ['/api/admin/comments', [['GET', 'admin', 'admin-comments']]],
+  ['/api/admin/comments/control', [['POST', 'admin', 'comment-control']]]
 ]);
 
 function checkParameters(url: URL, ...allowed: string[]) {
@@ -317,6 +319,7 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
             putJson(response, 200, session.setLike(input, clientAddress(request)));
           } else {
             if (operation === 'deck') session.saveDeck(input);
+            else if (operation === 'comment-control') session.controlComment(input);
             else session.control(input);
             putJson(response, 200, session.state('admin'));
           }

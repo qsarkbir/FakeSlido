@@ -66,10 +66,15 @@
       <header class="dialog-heading"><h2 id="editor-title">質問を追加</h2><button type="button" id="cancel-edit" class="icon" aria-label="閉じる">×</button></header>
       <label class="field">質問文<textarea id="question-text" required rows="2" placeholder="例）次回のテーマは何がよいですか？"></textarea></label>
       <div class="field-grid">
-        <label class="field">回答形式<select id="question-type"><option value="single">単一選択</option><option value="multiple">複数選択</option></select></label>
-        <label class="field">グラフ<select id="question-style"></select></label>
+        <label class="field">回答形式<select id="question-type"><option value="single">単一選択</option><option value="multiple">複数選択</option><option id="discussion-option" value="discussion" hidden disabled>コメント</option></select></label>
+        <label class="field" id="graph-field">グラフ<select id="question-style"></select></label>
       </div>
-      <fieldset><legend>選択肢</legend><div id="option-fields"></div><button type="button" id="add-option" class="compact">＋ 選択肢を追加</button></fieldset>
+      <fieldset id="choice-settings"><legend>選択肢</legend><div id="option-fields"></div><button type="button" id="add-option" class="compact">＋ 選択肢を追加</button></fieldset>
+      <div id="discussion-settings" hidden>
+        <label class="field">審査方式<select id="moderation-mode"><option value="manual">事前審査（推奨）</option><option value="instant">即時公開</option></select></label>
+        <label class="field">ブラウザのトークンごとの投稿上限<select id="post-limit"><option value="1">1件</option><option value="3" selected>3件</option><option value="unlimited">制限なし</option></select></label>
+        <p class="muted">審査方式は変更後の新しい投稿に適用します。既存のコメントの公開状態は変わりません。即時公開では未審査の本文が参加者に表示されます。</p>
+      </div>
       <p id="edit-error" class="notice" hidden role="alert"></p>
       <footer class="actions dialog-actions"><button type="button" id="cancel-edit-footer">キャンセル</button><button type="submit" class="primary">質問を保存</button></footer>
     </form>
@@ -77,11 +82,12 @@
   <dialog id="erase-dialog" aria-labelledby="erase-title" aria-describedby="erase-description">
     <div class="erase-dialog-content">
       <h2 id="erase-title">全データ消去の確認</h2>
-      <p id="erase-description">サーバー上の質問と票をすべて消去します。現在の参加URLと発表URLは無効になり、消した票は復元できません。</p>
+      <p id="erase-description">サーバー上の質問・票・お題・コメント・いいねをすべて消去します。現在の参加URLと発表URLは無効になり、消したデータは復元できません。集計 CSV / JSON にコメントは含まれません。</p>
       <dl class="erase-counts" aria-live="polite">
         <div><dt>消去する質問数</dt><dd id="erase-questions"></dd></div>
         <div><dt>回答のある質問数</dt><dd id="erase-answered"></dd></div>
         <div><dt>総回答件数</dt><dd id="erase-responses"></dd></div>
+        <div><dt>コメント件数</dt><dd id="erase-comments"></dd></div>
       </dl>
       <div id="erase-exports" class="erase-exports" hidden>
         <p class="muted">総回答件数は質問ごとの回答者数の合計です。必要な集計をダウンロードし、保存先をご確認ください。ブラウザから保存完了を確認することはできません。</p>

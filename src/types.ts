@@ -119,6 +119,16 @@ export interface AdminComments {
   comments: AdminComment[];
 }
 
+export interface CommentControlInput {
+  sessionId: string;
+  questionId: string;
+  discussionRevision: number;
+  commentId: string;
+  action: 'publish' | 'hide' | 'delete';
+  expectedVisibility: CommentVisibility;
+  confirm?: boolean;
+}
+
 export interface OptionResult {
   optionIndex: number;
   optionText: string;
