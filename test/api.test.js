@@ -232,15 +232,74 @@ test('以前のセッションの確認では現在のセッションを消去�
   assert.equal((await state()).sessionId, current.sessionId);
 });
 
-test('管理の自動取得と本番前チェックでは有効期限を延長しない', async () => {
-  const { call, state } = await fixture({ idleMs: 150 });
+test('状態取得や投票では期限が延びず、期限到来で票と参加・発表キーを消去する', async () => {
+  const { call, control, deck, state, vote } = await fixture({ idleMs: 350 });
+  await deck([first]);
+  await control('open', 'one');
   const before = await state();
   await sleep(85);
-  assert.equal((await state()).sessionId, before.sessionId);
+  assert.equal((await vote(before.participantCode, 'one', 1, before.questions[0].voteRevision)).status, 200);
   assert.equal((await call('/api/admin/preflight')).status, 200);
-  await sleep(100);
-  assert.notEqual((await state()).sessionId, before.sessionId);
+  const afterVote = await state();
+  assert.equal(afterVote.sessionId, before.sessionId);
+  assert.equal(afterVote.expiresAt, before.expiresAt);
+  assert.ok(afterVote.serverTime > before.serverTime);
+  assert.equal(afterVote.questions[0].results.respondentCount, 1);
+  await sleep(Math.max(0, before.expiresAt - Date.now()) + 30);
+  const after = await state();
+  assert.notEqual(after.sessionId, before.sessionId);
+  assert.ok(after.expiresAt > before.expiresAt);
+  assert.deepEqual(after.questions, []);
   assert.equal((await call('/api/public/state', { token: before.participantCode })).status, 410);
+  assert.equal((await call('/api/present/state', { token: before.presentationToken })).status, 410);
+});
+
+test('管理キーと現在のセッションでのみ期限を延長し、運営画面に通知する', async () => {
+  const idleMs = 60_000;
+  const { call, deck, erase, state } = await fixture({ idleMs, waitMs: 1000 });
+  const { body: before } = await deck([first]);
+  const publicState = () => call('/api/public/state', { token: before.participantCode });
+  const presentState = () => call('/api/present/state', { token: before.presentationToken });
+  const publicBefore = (await publicState()).body;
+  const presentBefore = (await presentState()).body;
+  for (const data of [publicBefore, presentBefore]) {
+    assert.equal(Object.hasOwn(data, 'expiresAt'), false);
+    assert.equal(Object.hasOwn(data, 'serverTime'), false);
+  }
+  const extend = (sessionId, token) => call('/api/admin/control', {
+    token, method: 'POST', data: { action: 'extend-expiry', sessionId }
+  });
+  assert.equal((await extend(before.sessionId, before.participantCode)).status, 401);
+  assert.equal((await extend()).status, 400);
+  const waiting = call('/api/admin/state?revision=' + before.revision);
+  await sleep(15);
+  const { status, body: extended } = await extend(before.sessionId);
+  assert.equal(status, 200);
+  assert.equal(extended.sessionId, before.sessionId);
+  assert.ok(extended.expiresAt > before.expiresAt);
+  assert.ok(extended.expiresAt > extended.serverTime && extended.expiresAt - extended.serverTime <= idleMs);
+  assert.deepEqual(extended.questions, before.questions);
+  const notified = await waiting;
+  assert.equal(notified.status, 200);
+  assert.equal(notified.body.expiresAt, extended.expiresAt);
+  assert.deepEqual((await publicState()).body, publicBefore);
+  assert.deepEqual((await presentState()).body, presentBefore);
+
+  const { body: fresh } = await erase(before.sessionId);
+  assert.equal((await extend(before.sessionId)).status, 409);
+  assert.equal((await state()).expiresAt, fresh.expiresAt);
+});
+
+test('集計の書き出しで更新した期限を運営画面に通知する', async () => {
+  const { call, state } = await fixture({ waitMs: 1000 });
+  const before = await state();
+  const waiting = call('/api/admin/state?revision=' + before.revision);
+  await sleep(15);
+  assert.equal((await call('/api/admin/export?format=json')).status, 200);
+  const result = await waiting;
+  assert.equal(result.status, 200);
+  assert.ok(result.body.expiresAt > before.expiresAt);
+  assert.equal(result.body.sessionId, before.sessionId);
 });
 
 test('本番前チェックは運営認証で現在の接続情報を取得する', async () => {
@@ -261,7 +320,8 @@ test('本番前チェックは運営認証で現在の接続情報を取得す�
   assert.equal((await call(path, { method: 'POST' })).status, 405);
   assert.equal((await call('/api/present/state', { token: result.body.presentationToken })).body.sessionId,
     before.sessionId);
-  assert.deepEqual(await state(), before);
+  const after = await state();
+  assert.deepEqual(after, { ...before, serverTime: after.serverTime });
 });
 
 test('新しいプロセス相当のサーバーには旧セッションの票と鍵を渡さない', async () => {
@@ -313,7 +373,8 @@ test('JSON の型が違う入力を拒否し、質問集と票を変更しない
     assert.equal((await call('/api/admin/deck', { method: 'PUT', data })).status, 400);
   }
   assert.equal((await call('/api/admin/control', { method: 'POST', data: { action: 'erase', confirm: 'true' } })).status, 400);
-  assert.deepEqual(await state(), before);
+  const after = await state();
+  assert.deepEqual(after, { ...before, serverTime: after.serverTime });
 
   const { body: created } = await deck([first]);
   const token = created.participantCode;
