@@ -53,10 +53,13 @@ async function fixture(options = {}) {
   const erase = (sessionId, token = key) => call('/api/admin/control', {
     token, method: 'POST', data: { action: 'erase', confirm: true, sessionId }
   });
+  const advance = ({ sessionId, deckRevision, presentation }, token = key) => call('/api/admin/control', {
+    token, method: 'POST', data: { action: 'advance', sessionId, deckRevision, questionId: presentation.questionId }
+  });
   const vote = (token, questionId, choices, voteRevision, voterToken = newKey()) => call('/api/public/vote', {
     token, method: 'POST', data: { questionId, voterToken, choices, voteRevision }
   });
-  return { origin, key, state, deck, control, erase, call, vote };
+  return { origin, key, state, deck, control, erase, advance, call, vote };
 }
 
 test('公開状態、受付状態、発表モードが独立し、未オープンの質問を返さない', async () => {
@@ -128,6 +131,64 @@ test('受付開始で発表画面が、受付を開始した質問の表示に�
   assert.equal(switched.mode, 'question');
   assert.equal(switched.question.resultsPublished, false);
   assert.equal(Object.hasOwn(switched.question, 'results'), false);
+});
+
+test('次の質問への進行は一度だけ実行し、公開済み結果とほかの受付を維持する', async () => {
+  const { call, deck, control, vote, advance, state } = await fixture();
+  const third = { ...first, questionId: 'three' };
+  const fourth = { ...first, questionId: 'four' };
+  const { body: created } = await deck([first, second, third, fourth]);
+  const { participantCode: token, presentationToken } = created;
+  const present = (revision = '') => call('/api/present/state' + revision, { token: presentationToken });
+  const publicState = () => call('/api/public/state', { token });
+  await control('open', 'three');
+  await control('open', 'one');
+  assert.equal((await vote(token, 'one', 1, created.questions[0].voteRevision)).status, 200);
+  const { body: before } = await control('show-results');
+  assert.deepEqual((await publicState()).body.questions.map(question => question.questionId), ['one', 'three']);
+  assert.equal((await advance(before, token)).status, 401);
+  assert.equal((await advance({ ...before, sessionId: 'old-session' })).status, 409);
+  assert.equal((await advance({ ...before, deckRevision: undefined })).status, 400);
+  const { body: stageBefore } = await present();
+  const waiting = present('?revision=' + stageBefore.revision);
+  const attempts = await Promise.all([advance(before), advance(before)]);
+  assert.deepEqual(attempts.map(result => result.status).sort(), [200, 409]);
+  const { body: advanced } = attempts.find(result => result.status === 200);
+  assert.equal(advanced.revision, before.revision + 1);
+  assert.equal(advanced.deckRevision, before.deckRevision);
+  assert.deepEqual(advanced.presentation, { questionId: 'two', mode: 'question' });
+  assert.deepEqual(advanced.questions.map(q => [q.isOpen, q.everOpened, q.resultsPublished]),
+    [[false, true, true], [true, true, false], [true, true, false], [false, false, false]]);
+  const { body: displayed } = await waiting;
+  assert.equal(displayed.revision, stageBefore.revision + 1);
+  assert.equal(displayed.mode, 'question');
+  assert.equal(displayed.question.questionId, 'two');
+  assert.equal(displayed.question.isOpen, true);
+  assert.deepEqual((await publicState()).body.questions.map(question => question.questionId), ['one', 'two', 'three']);
+  assert.equal((await call('/api/public/results?questionId=one', { token })).body.respondentCount, 1);
+  assert.equal((await vote(token, 'one', 2, created.questions[0].voteRevision)).status, 409);
+
+  const { body: last } = await control('open', 'four');
+  assert.equal((await advance(last)).status, 409);
+  const after = await state();
+  assert.deepEqual(after, { ...last, serverTime: after.serverTime });
+});
+
+test('並べ替え前の状態では進行できず、更新後の順番で次の質問を開く', async () => {
+  const { deck, control, advance, state } = await fixture();
+  const third = { ...first, questionId: 'three' };
+  await deck([first, second, third]);
+  const { body: before } = await control('open', 'one');
+  const { body: reordered } = await deck([first, third, second]);
+  const rejected = await advance(before);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.body.code, 'deck_changed');
+  const after = await state();
+  assert.deepEqual(after, { ...reordered, serverTime: after.serverTime });
+  const { status, body: advanced } = await advance(reordered);
+  assert.equal(status, 200);
+  assert.equal(advanced.presentation.questionId, 'three');
+  assert.deepEqual(advanced.questions.map(question => question.everOpened), [true, true, false]);
 });
 
 test('複数選択を集計し、CSVとJSONに集計値だけを書き出す', async () => {
