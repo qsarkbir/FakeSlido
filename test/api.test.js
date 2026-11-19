@@ -493,7 +493,10 @@ test('静的ファイルを固定リストから提供し、QRコードの版と
     assert.match(page.headers.get('content-security-policy'), /default-src 'none'.*frame-ancestors 'none'/);
     assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
   }
-  const javascript = ['/participate.js', '/admin.js', '/present.js', '/common.js', '/charts.js', '/preflight.js', '/qr.js'];
+  const javascript = [
+    '/participate.js', '/participant-discussion.js', '/admin.js', '/present.js',
+    '/common.js', '/charts.js', '/preflight.js', '/qr.js'
+  ];
   const assets = [
     ...javascript.map(path => [path, 'text/javascript; charset=utf-8']),
     ['/styles.css', 'text/css; charset=utf-8'],
@@ -703,6 +706,38 @@ test('公開済みコメントにだけいいねでき、同じ設定の再送�
   assert.equal((await like(snapshot, { ...reaction, liked: false })).status, 409);
   assert.equal((await post(snapshot, { ...base, clientSubmissionId: 'closed', body: literal })).status, 409);
   assert.equal((await publicList()).body.comments[0].likes, 1);
+});
+
+test('コメント一覧は公開内容の変更がある場合にだけ再配信する', async () => {
+  const { deck, control, post, comments, like, requestData } = await discussionFixture();
+  const { body: snapshot } = await deck([manualTopic, instantTopic]);
+  for (const topic of snapshot.discussions) await control('open', topic.questionId);
+  const reader = newKey();
+  const list = (id, revision) => comments(snapshot.participantCode, id + '&revision=' + revision, reader);
+  const { body: pending } = await comments(snapshot.participantCode, 'manual', reader);
+  const { body: empty } = await comments(snapshot.participantCode, 'instant', reader);
+  assert.equal((await list('instant', empty.revision)).status, 204);
+  assert.equal((await list('instant', 'invalid')).status, 400);
+  await post(snapshot, { ...requestData(snapshot, 'manual', newKey()), clientSubmissionId: 'one', body: '審査待ち' });
+  assert.equal((await list('manual', pending.revision)).status, 204);
+
+  const { body: added } = await post(snapshot, { ...requestData(snapshot, 'instant', newKey()),
+    clientSubmissionId: 'one', body: '新しいコメント' });
+  const published = await list('instant', empty.revision);
+  assert.equal(published.status, 200);
+  assert.ok(published.body.revision > empty.revision);
+  const reaction = { ...requestData(snapshot, 'instant', reader), commentId: added.commentId, liked: true };
+  await like(snapshot, reaction);
+  const liked = await list('instant', published.body.revision);
+  assert.equal(liked.status, 200);
+  assert.equal(liked.body.comments[0].likedByYou, true);
+  await like(snapshot, reaction);
+  assert.equal((await list('instant', liked.body.revision)).status, 204);
+  await deck([manualTopic, { ...instantTopic, text: '編集後のお題' }]);
+  const edited = await list('instant', liked.body.revision);
+  assert.equal(edited.status, 200);
+  assert.notEqual(edited.body.discussionRevision, liked.body.discussionRevision);
+  assert.deepEqual(edited.body.comments, liked.body.comments);
 });
 
 test('審査設定の変更は新規投稿にだけ適用し、置換や全消去で旧データを破棄する', async () => {

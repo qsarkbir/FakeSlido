@@ -108,6 +108,7 @@ export interface PublicComments {
   sessionId: string;
   questionId: string;
   discussionRevision: number;
+  revision: number;
   comments: PublicComment[];
 }
 

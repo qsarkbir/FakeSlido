@@ -3,7 +3,8 @@ import {
   connection, isRecord, RequestError
 } from './common.js';
 import { chart } from './charts.js';
-import type { PublicQuestion, PublicResults, PublicState, VoteInput } from '../types.js';
+import { createDiscussionView } from './participant-discussion.js';
+import type { PublicDiscussion, PublicQuestion, PublicResults, PublicState, VoteInput } from '../types.js';
 
 const storageKey = 'fakeslido:participant';
 const lifetime = 24 * 60 * 60 * 1000;
@@ -31,6 +32,7 @@ interface VoteAttempt {
 
 // 未確認の送信はページ内だけに保持する。受理を確認するまで回答の控えに書かない。
 const retryVotes = new Map<string, { attempt: VoteAttempt; hint: string }>();
+const discussionViews = new Map<string, ReturnType<typeof createDiscussionView>>();
 
 function voterToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -94,6 +96,8 @@ function invalid(text: string) {
   state = null;
   sessionInvalid = true;
   retryVotes.clear();
+  for (const view of discussionViews.values()) view.dispose();
+  discussionViews.clear();
   connection('未接続', true);
   message('');
   resultRequest++;
@@ -117,6 +121,17 @@ function ensureRecord(sessionId: string): ParticipantRecord {
 
 function currentQuestion() {
   return state?.questions.find(question => question.questionId === selectedId);
+}
+
+function orderedQuestions(state: PublicState) {
+  const questions: (PublicQuestion | PublicDiscussion)[] = [...state.questions];
+  // お題の位置は公開済みの質問とお題を合わせた順番。順に差し込んで一つの一覧にする。
+  for (const topic of state.discussions ?? []) questions.splice(topic.questionOrder - 1, 0, topic);
+  return questions;
+}
+
+function refreshDiscussion() {
+  if (selectedId !== undefined) void discussionViews.get(selectedId)?.refresh();
 }
 
 function ownAnswer(question: PublicQuestion): SavedAnswer | null {
@@ -156,16 +171,24 @@ function pruneRetries() {
 }
 
 async function applyState(next: PublicState) {
-  if (sessionInvalid || (state && next.revision < state.revision)) return;
+  const sameSession = state?.sessionId === next.sessionId;
+  if (sessionInvalid || (sameSession && state && next.revision < state.revision)) return;
   const record = ensureRecord(next.sessionId);
   const previous = currentQuestion();
   state = next;
+  for (const [id, view] of discussionViews) {
+    if (!sameSession || !next.discussions?.some(topic => topic.questionId === id)) {
+      view.dispose();
+      discussionViews.delete(id);
+    }
+  }
   pruneRetries();
   const priorAnswers = Object.keys(record.answers).length;
   pruneAnswers(record, next);
   if (Object.keys(record.answers).length !== priorAnswers) persist(record);
-  if (!currentQuestion()) {
-    selectedId = next.questions.find(question => question.isOpen)?.questionId ?? next.questions[0]?.questionId;
+  const questions = orderedQuestions(next);
+  if (!questions.some(question => question.questionId === selectedId)) {
+    selectedId = questions.find(question => question.isOpen)?.questionId ?? questions[0]?.questionId;
     editing = false;
     choices = [];
   }
@@ -177,6 +200,7 @@ async function applyState(next: PublicState) {
   if (results?.question.questionId !== question?.questionId || !question?.resultsPublished
     || results?.question.voteRevision !== question?.voteRevision) results = null;
   render();
+  refreshDiscussion();
   await updateResults();
 }
 
@@ -190,15 +214,19 @@ function selectQuestion(id: string) {
   results = null;
   resultRequest++;
   render();
+  refreshDiscussion();
   updateResults().catch(() => {});
 }
 
 function nav(state: PublicState) {
   const nav = $('question-nav');
-  nav.hidden = !state.questions.length;
-  nav.replaceChildren(...state.questions.map((question, index) => {
+  const questions = orderedQuestions(state);
+  nav.hidden = !questions.length;
+  nav.replaceChildren(...questions.map((question, index) => {
     const selected = selectedId === question.questionId;
-    const item = button('質問 ' + (index + 1) + (ownAnswer(question) ? ' ✓' : ''), () => selectQuestion(question.questionId), 'compact');
+    const label = question.type === 'discussion' ? 'お題 ' + (index + 1)
+      : '質問 ' + (index + 1) + (ownAnswer(question) ? ' ✓' : '');
+    const item = button(label, () => selectQuestion(question.questionId), 'compact');
     item.setAttribute('aria-current', selected ? 'true' : 'false');
     return item;
   }));
@@ -208,6 +236,18 @@ function render() {
   if (!state) return;
   nav(state);
   const panel = $('ballot');
+  const topic = state.discussions?.find(item => item.questionId === selectedId);
+  if (topic && record) {
+    const context = { topic, sessionId: state.sessionId, voterToken: record.voterToken };
+    let view = discussionViews.get(topic.questionId);
+    if (!view) {
+      view = createDiscussionView(context, code, invalid, () => void refreshAfterConflict(topic.questionId));
+      discussionViews.set(topic.questionId, view);
+    }
+    view.update(context);
+    if (panel.firstElementChild !== view.element) panel.replaceChildren(view.element);
+    return;
+  }
   const question = currentQuestion();
   if (!question) {
     panel.replaceChildren(emptyState('質問の開始をお待ちください', '質問がオープンすると、この画面に表示されます。'));
@@ -444,6 +484,7 @@ poll('/api/public/state', codePattern.test(code ?? '') ? code : null, {
       results = null;
       render();
     }
+    refreshDiscussion();
   },
   onInvalid: invalid
 });

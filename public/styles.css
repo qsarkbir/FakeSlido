@@ -215,6 +215,13 @@ legend { padding: 0; margin-bottom: .4rem; font-size: .85rem; font-weight: 700; 
 .ballot-option:has(input:checked) { border-color: #9e95ef; background: #f1eeff; }
 .ballot-option input { flex: none; accent-color: var(--accent); width: 1.15rem; height: 1.15rem; }
 .vote-form .actions { margin-top: .85rem; }
+.discussion-form { display: grid; gap: .65rem; }
+.discussion-form .notice, .discussion-public .notice { margin: 0; }
+.discussion-public { display: grid; gap: .65rem; margin-top: 1.4rem; }
+.discussion-list { display: grid; gap: .65rem; margin: 0; padding: 0; list-style: none; }
+.discussion-comment { display: grid; gap: .6rem; padding: .8rem; border: 1px solid var(--line); border-radius: 9px; }
+.discussion-body { color: var(--ink); white-space: pre-wrap; }
+.discussion-comment .actions { font-size: .85rem; }
 .receipt { margin-top: 1rem; border: 1px solid var(--line); background: #f6f8fc; border-radius: 10px; padding: .85rem; }
 .receipt-label { color: #196044; font-weight: 800; font-size: .85rem; margin-bottom: .25rem; }
 .answer-list { margin: .35rem 0 .5rem; padding-left: 1.4rem; overflow-wrap: anywhere; }

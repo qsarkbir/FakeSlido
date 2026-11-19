@@ -23,6 +23,7 @@ const assets = {
   '/common.js': 'text/javascript; charset=utf-8',
   '/admin.js': 'text/javascript; charset=utf-8',
   '/participate.js': 'text/javascript; charset=utf-8',
+  '/participant-discussion.js': 'text/javascript; charset=utf-8',
   '/present.js': 'text/javascript; charset=utf-8',
   '/charts.js': 'text/javascript; charset=utf-8',
   '/preflight.js': 'text/javascript; charset=utf-8',
@@ -261,10 +262,16 @@ export function createApp({ adminKey, baseUrl, transport = 'local', idleMs = 43_
           checkParameters(url, 'questionId');
           putJson(response, 200, session.results(url.searchParams.get('questionId')));
           break;
-        case 'comments':
-          checkParameters(url, 'questionId');
-          putJson(response, 200, session.publicComments(url.searchParams.get('questionId'), request.headers['x-pochipoll-voter']));
+        case 'comments': {
+          checkParameters(url, 'questionId', 'revision');
+          const revision = url.searchParams.get('revision');
+          requireValue(revision === null || /^\d{1,16}$/.test(revision) && Number.isSafeInteger(Number(revision)));
+          const data = session.publicComments(url.searchParams.get('questionId'), request.headers['x-pochipoll-voter'],
+            revision === null ? undefined : Number(revision));
+          if (data) putJson(response, 200, data);
+          else response.writeHead(204).end();
           break;
+        }
         case 'admin-comments':
           checkParameters(url, 'questionId');
           putJson(response, 200, session.adminComments(url.searchParams.get('questionId')));
