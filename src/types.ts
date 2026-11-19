@@ -127,5 +127,5 @@ export interface ResultsExport {
 
 export interface ErrorResponse {
   error: string;
-  code?: 'deck_changed' | 'confirm_reset';
+  code?: 'deck_changed' | 'confirm_reset' | 'vote_closed' | 'vote_changed' | 'vote_full';
 }

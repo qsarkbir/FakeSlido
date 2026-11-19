@@ -427,6 +427,40 @@ test('権限、オリジン、型、本文サイズとレートを制限する',
   assert.ok(limited.headers.has('retry-after'));
 });
 
+test('受理済みの同じ回答を再送しても重複せず、終了・更新・旧セッションでは受理しない', async () => {
+  const { call, control, deck, erase, state } = await fixture();
+  const { body: created } = await deck([second]);
+  await control('open', 'two');
+  const voteRevision = created.questions[0].voteRevision;
+  const data = { questionId: 'two', voterToken: newKey(), voteRevision, choices: [1, 3] };
+  const send = () => call('/api/public/vote', { token: created.participantCode, method: 'POST', data });
+  const accepted = await send();
+  assert.equal(accepted.status, 200);
+  const beforeRetry = await state();
+  const retry = await send();
+  assert.equal(retry.status, 200);
+  assert.deepEqual(retry.body, { sessionId: created.sessionId, voteRevision });
+  const afterRetry = await state();
+  assert.equal(afterRetry.revision, beforeRetry.revision);
+  assert.equal(afterRetry.questions[0].results.respondentCount, 1);
+  assert.equal(afterRetry.questions[0].results.totalSelections, 2);
+
+  await control('close', 'two');
+  const closed = await send();
+  assert.equal(closed.status, 409);
+  assert.equal(closed.body.code, 'vote_closed');
+  assert.equal((await state()).questions[0].results.respondentCount, 1);
+  await control('open', 'two');
+  await control('reset-votes', 'two', true);
+  const changed = await send();
+  assert.equal(changed.status, 409);
+  assert.equal(changed.body.code, 'vote_changed');
+  assert.equal((await state()).questions[0].results.respondentCount, 0);
+
+  await erase(created.sessionId);
+  assert.equal((await send()).status, 410);
+});
+
 test('JSON の型が違う入力を拒否し、質問集と票を変更しない', async () => {
   const { call, control, deck, state, vote } = await fixture();
   const before = await state();
