@@ -40,7 +40,9 @@ PowerShell で npm の実行が制限されている場合は、`npm` を `npm.c
 
 ## コメント＋いいね（公開前の検証段階）
 
-コメント機能は **通常の `npm start` では無効**です。現在は結合テスト等の `createApp({ discussionEnabled: true })` でのみ有効にし、運営者の手動受入が済むまで一般公開を有効化しません。既存の投票の起動・Quick Tunnel 公開手順は変わりません。
+コメント機能は **通常の `npm start` では無効**です。ローカル試用の `npm run preview:discussion` と結合テストで有効にし、運営者の手動受入が済むまで一般公開を有効化しません。既存の投票の起動・Quick Tunnel 公開手順は変わりません。
+
+手元で確認するには Node.js 24 で `npm ci` → `npm run preview:discussion` を実行します。ビルド後に `127.0.0.1:3001` で試用サーバーが起動し、運営用 URL が表示されます。公開用の `BASE_URL` / `TRANSPORT` 設定は拒否し、通常起動とは別ポートを使います。試用質問集と操作チェック表は [コメント機能の手動受入](docs/discussion-acceptance.md) を参照してください。終了は `Ctrl+C` です。
 
 機能を有効にした検証環境での操作は次のとおりです。
 
