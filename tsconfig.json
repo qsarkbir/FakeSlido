@@ -6,9 +6,7 @@
     "types": ["node"],
     "rootDir": "src",
     "outDir": "dist",
-    // 段階的な移行の間は既存の .js も出力する。.ts には最初から厳密な型チェックがかかる。
-    "allowJs": true,
-    "checkJs": false,
+    // 型エラーを解消するまで生成物を更新しない。
     "strict": true,
     "noEmitOnError": true
   },

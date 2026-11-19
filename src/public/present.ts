@@ -2,17 +2,33 @@ import {
   $, el, message, tabCredential, participantUrl, canShareParticipantUrl, poll, storageSet, emptyState, statusPill
 } from './common.js';
 import { chart, svgElement } from './charts.js';
+import type { PresentState } from '../types.js';
 
 const token = tabCredential('present');
-let previousCode;
+const joinLink = $('join-link', HTMLAnchorElement);
+let previousCode: string | undefined;
 
-function join(code) {
+interface QrCode {
+  addData(text: string): void;
+  make(): void;
+  getModuleCount(): number;
+  isDark(row: number, column: number): boolean;
+}
+
+// 同梱スクリプトが先に読み込まれ、Window に関数を追加する。利用する操作だけを宣言する。
+declare global {
+  interface Window {
+    qrcode(type: 0, correction: 'M'): QrCode;
+  }
+}
+
+function join(code: string) {
   if (previousCode === code) return;
   previousCode = code;
   const url = participantUrl(code);
-  $('join-link').href = url;
+  joinLink.href = url;
   if (!canShareParticipantUrl) {
-    $('join-link').textContent = 'この端末で参加画面を開く ↗';
+    joinLink.textContent = 'この端末で参加画面を開く ↗';
     $('local-join-help').hidden = false;
     return;
   }
@@ -34,7 +50,7 @@ function join(code) {
   $('qr-help').hidden = false;
 }
 
-function render(state) {
+function render(state: PresentState) {
   join(state.participantCode);
   $('stage').hidden = false;
   const { question } = state;
@@ -46,7 +62,7 @@ function render(state) {
     el('div', { cls: 'pills' }, statusPill(question.isOpen),
       el('span', { cls: 'pill pill-muted', text: question.type === 'single' ? '単一選択' : '複数選択' })),
     el('h1', { text: question.text }));
-  if (state.mode === 'results') {
+  if (state.mode === 'results' && question.results) {
     $('stage-main').replaceChildren(heading, chart(question.results, question.style, question.type));
     return;
   }
@@ -61,6 +77,6 @@ poll('/api/present/state', token, { interval: 0, onState: render, onInvalid: tex
   $('stage').hidden = true;
   $('stage-main').replaceChildren();
   $('qr').replaceChildren();
-  $('join-link').removeAttribute('href');
+  joinLink.removeAttribute('href');
   message(text);
 } });

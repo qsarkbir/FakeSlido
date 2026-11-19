@@ -1,15 +1,18 @@
 import { el } from './common.js';
+import type { GraphStyle, QuestionType, Tally } from '../types.js';
 
 const palette = ['#5047e5', '#00857d', '#c45519', '#b63272', '#2371b7', '#7e5835', '#68798a', '#68662a'];
 const namespace = 'http://www.w3.org/2000/svg';
 
-export function svgElement(tag, attributes) {
+type SvgAttributes = Record<string, string | number>;
+
+export function svgElement<Tag extends keyof SVGElementTagNameMap>(tag: Tag, attributes: SvgAttributes) {
   const element = document.createElementNS(namespace, tag);
-  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, String(value));
   return element;
 }
 
-function bar(width, color, vertical) {
+function bar(width: number, color: string, vertical: boolean) {
   const svg = svgElement('svg', {
     viewBox: vertical ? '0 0 48 120' : '0 0 1000 16',
     preserveAspectRatio: 'none', 'aria-hidden': 'true'
@@ -23,12 +26,12 @@ function bar(width, color, vertical) {
   return svg;
 }
 
-function segmented(results, donut) {
+function segmented(results: Tally, donut: boolean) {
   const svg = svgElement('svg', {
     viewBox: donut ? '0 0 140 140' : '0 0 1000 32',
     preserveAspectRatio: donut ? 'xMidYMid meet' : 'none', 'aria-hidden': 'true'
   });
-  const track = donut ? { cx: 70, cy: 70, r: 53, fill: 'none', stroke: '#ebedf7', 'stroke-width': 26 }
+  const track: SvgAttributes = donut ? { cx: 70, cy: 70, r: 53, fill: 'none', stroke: '#ebedf7', 'stroke-width': 26 }
     : { width: 1000, height: 32, fill: '#ebedf7' };
   const tag = donut ? 'circle' : 'rect';
   svg.append(svgElement(tag, track));
@@ -46,7 +49,7 @@ function segmented(results, donut) {
   return svg;
 }
 
-export function chart(results, style, type) {
+export function chart(results: Tally, style: GraphStyle, type: QuestionType) {
   const vertical = style === 'vertical';
   const container = el('div', { cls: 'chart chart-' + style });
   container.append(el('p', { cls: 'chart-summary', text: results.respondentCount + ' 人が回答'

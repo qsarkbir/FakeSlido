@@ -83,7 +83,7 @@ PochiPoll と `cloudflared` を同じOS環境で実行します。両方を Wind
 
 アプリのソースは `src/` にあり、ブラウザ用のモジュールは `src/public/` にあります。TypeScript コンパイラはこの構成を保って `dist/` に JavaScript を出力します。HTML・CSS・SVG・QR コードライブラリは `public/` から `dist/public/` にコピーします。`npm start` はこの生成物を使います。
 
-移行中は既存の JavaScript と新しい TypeScript が混在できます。`strict` は TypeScript の型を厳密に検査します。`allowJs` は既存の JavaScript をビルド対象に含め、`checkJs: false` は既存の JavaScript の型検査を後続作業に委ねます。ES モジュールの相対 import は、TypeScript ファイルからでも実行時に解決される拡張子 `.js` を指定します。
+アプリの TypeScript は `strict` を有効にして検査します。ES モジュールの相対 import は実行時に解決される拡張子 `.js` を指定します。型と実行時検証の違いや画面から API までの流れは [TypeScript 学習ガイド](docs/typescript-guide.md) を参照してください。
 
 ```sh
 npm ci
